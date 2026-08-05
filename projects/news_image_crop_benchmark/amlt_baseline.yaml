@@ -1,0 +1,121 @@
+# yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
+description: Distributed full-test frozen Qwen3.5-9B crop baseline with proxy scoring
+
+target:
+  service: manifold
+  name: Recall
+  workspace_name: CS-NewsAndFeeds-Singularity
+
+storage:
+  blob_output:
+    storage_account_name: csnewsandfeeds4150361735
+    container_name: unium
+    mount_dir: /mnt/blob_output
+    is_output: true
+
+environment:
+  image: amlt-sing/acpt-torch2.8.x-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - python -m pip install uv
+    - uv python install 3.12
+    - uv venv --seed --python 3.12 .venv-qwen35
+    - uv pip install --python .venv-qwen35/bin/python "vllm==0.24.0"
+    - uv pip install --python .venv-qwen35/bin/python -e .
+    - uv pip install --python .venv-qwen35/bin/python -e "projects/news_image_crop_benchmark[data,train,test]"
+    - uv pip uninstall --python .venv-qwen35/bin/python opencv-python
+    - uv pip install --python .venv-qwen35/bin/python --reinstall opencv-python-headless
+
+code:
+  local_dir: $CONFIG_DIR/../..
+
+jobs:
+  - name: baseline-shard-0
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: UAMI-CS-NewsAndFeeds-Singularity
+    command: .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet --reward-file projects/news_image_crop_benchmark/rewards/crop_reward.py --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 --clip-device cuda --output-dir /mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot_distributed_20260805/shard-0 --all-groups --n 8 --data-parallel-size 1 --tensor-parallel-size 1 --prompt-batch-size 32 --max-num-seqs 32 --shard-count 8 --shard-index 0 --run-id qwen35-fulltest-20260805-v1 --resume
+
+  - name: baseline-shard-1
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: UAMI-CS-NewsAndFeeds-Singularity
+    command: .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet --reward-file projects/news_image_crop_benchmark/rewards/crop_reward.py --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 --clip-device cuda --output-dir /mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot_distributed_20260805/shard-1 --all-groups --n 8 --data-parallel-size 1 --tensor-parallel-size 1 --prompt-batch-size 32 --max-num-seqs 32 --shard-count 8 --shard-index 1 --run-id qwen35-fulltest-20260805-v1 --resume
+
+  - name: baseline-shard-2
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: UAMI-CS-NewsAndFeeds-Singularity
+    command: .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet --reward-file projects/news_image_crop_benchmark/rewards/crop_reward.py --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 --clip-device cuda --output-dir /mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot_distributed_20260805/shard-2 --all-groups --n 8 --data-parallel-size 1 --tensor-parallel-size 1 --prompt-batch-size 32 --max-num-seqs 32 --shard-count 8 --shard-index 2 --run-id qwen35-fulltest-20260805-v1 --resume
+
+  - name: baseline-shard-3
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: UAMI-CS-NewsAndFeeds-Singularity
+    command: .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet --reward-file projects/news_image_crop_benchmark/rewards/crop_reward.py --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 --clip-device cuda --output-dir /mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot_distributed_20260805/shard-3 --all-groups --n 8 --data-parallel-size 1 --tensor-parallel-size 1 --prompt-batch-size 32 --max-num-seqs 32 --shard-count 8 --shard-index 3 --run-id qwen35-fulltest-20260805-v1 --resume
+
+  - name: baseline-shard-4
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: UAMI-CS-NewsAndFeeds-Singularity
+    command: .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet --reward-file projects/news_image_crop_benchmark/rewards/crop_reward.py --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 --clip-device cuda --output-dir /mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot_distributed_20260805/shard-4 --all-groups --n 8 --data-parallel-size 1 --tensor-parallel-size 1 --prompt-batch-size 32 --max-num-seqs 32 --shard-count 8 --shard-index 4 --run-id qwen35-fulltest-20260805-v1 --resume
+
+  - name: baseline-shard-5
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: UAMI-CS-NewsAndFeeds-Singularity
+    command: .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet --reward-file projects/news_image_crop_benchmark/rewards/crop_reward.py --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 --clip-device cuda --output-dir /mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot_distributed_20260805/shard-5 --all-groups --n 8 --data-parallel-size 1 --tensor-parallel-size 1 --prompt-batch-size 32 --max-num-seqs 32 --shard-count 8 --shard-index 5 --run-id qwen35-fulltest-20260805-v1 --resume
+
+  - name: baseline-shard-6
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: UAMI-CS-NewsAndFeeds-Singularity
+    command: .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet --reward-file projects/news_image_crop_benchmark/rewards/crop_reward.py --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 --clip-device cuda --output-dir /mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot_distributed_20260805/shard-6 --all-groups --n 8 --data-parallel-size 1 --tensor-parallel-size 1 --prompt-batch-size 32 --max-num-seqs 32 --shard-count 8 --shard-index 6 --run-id qwen35-fulltest-20260805-v1 --resume
+
+  - name: baseline-shard-7
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: UAMI-CS-NewsAndFeeds-Singularity
+    command: .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet --reward-file projects/news_image_crop_benchmark/rewards/crop_reward.py --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 --clip-device cuda --output-dir /mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot_distributed_20260805/shard-7 --all-groups --n 8 --data-parallel-size 1 --tensor-parallel-size 1 --prompt-batch-size 32 --max-num-seqs 32 --shard-count 8 --shard-index 7 --run-id qwen35-fulltest-20260805-v1 --resume
+
+  - name: baseline-merge
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: UAMI-CS-NewsAndFeeds-Singularity
+    command: |
+      set -euo pipefail
+      OUTPUT_ROOT=/mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot_distributed_20260805
+      DEADLINE=$$((SECONDS + 86400))
+      for SHARD_INDEX in 0 1 2 3 4 5 6 7; do
+        until test -f "$$OUTPUT_ROOT/shard-$$SHARD_INDEX/_SHARD_COMPLETE.json"; do
+          if (( SECONDS >= DEADLINE )); then echo "Timed out waiting for shard $$SHARD_INDEX" >&2; exit 1; fi
+          sleep 60
+        done
+      done
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/merge_baseline_shards.py --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet --shard-root "$$OUTPUT_ROOT" --shard-count 8 --output-dir "$$OUTPUT_ROOT/final" --run-id qwen35-fulltest-20260805-v1

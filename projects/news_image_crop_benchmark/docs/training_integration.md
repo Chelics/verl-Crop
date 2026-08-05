@@ -219,9 +219,18 @@ python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py \
   --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 \
   --clip-device cuda \
   --output-dir /mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot \
-  --groups 4 \
-  --n 4
+  --all-groups \
+  --n 8 \
+  --data-parallel-size 8 \
+  --tensor-parallel-size 1 \
+  --prompt-batch-size 32 \
+  --max-num-seqs 32
 ```
+
+该命令在单个 8 GPU 节点上启动 8 个独立的单卡 vLLM worker。每个 worker 只处理自己的
+test 子集，并按 prompt batch 将原始响应持久化。全部 Qwen worker 退出并释放显存后，主进程
+再使用 CLIP 计算 Proxy Reward、渲染候选裁剪并生成报告。任务中断后使用相同参数加
+`--resume`，已完成的生成和评分样本不会重新执行。
 
 该命令会输出 `details.jsonl` 和 `summary.json`，包含格式合法率、分比例得分、best-of-N 得分以及相对中心裁剪的胜率。保存该结果后再执行正式训练：
 
