@@ -52,6 +52,8 @@ action:
 
 reward:
   invalid_output: -1.0
+  recoverable_format_reward: 0.5
+  format_penalty_weight: 0.10
   weights:
     title_relevance: 0.45
     saliency: 0.20

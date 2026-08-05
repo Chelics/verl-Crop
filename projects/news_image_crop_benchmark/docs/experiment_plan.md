@@ -35,6 +35,8 @@ Qwen3.5-9B 能否根据新闻标题和原图生成有用的固定比例裁剪？
 
 正式训练前必须先运行未训练 Qwen3.5-9B 的 vLLM baseline。至少按“原图+标题”抽取若干组完整四比例任务，每个 prompt 采样多个候选，记录格式合法率、动作面积/中心分布、proxy reward，以及 best-of-N 相对中心裁剪的胜率。Baseline 结果固定后再启动 GRPO，避免只看到训练后分数而无法判断实际增益。
 
+完整的两阶段规模、对照组、`pass@1/mean@8/best@8` 报告要求、人工抽查和决策门槛见 [baseline_evaluation.md](baseline_evaluation.md)。该文档是 P1 的验收依据。
+
 ### P2：自动伪标签 SFT
 
 - 围绕显著区域和标题相关区域生成满足比例约束的候选框。

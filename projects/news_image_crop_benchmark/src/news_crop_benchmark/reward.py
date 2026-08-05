@@ -35,7 +35,7 @@ def combine_proxy_reward(
     weights: RewardWeights = RewardWeights(),
     invalid_reward: float = -1.0,
 ) -> float:
-    """Combine normalized proxy metrics; metric extraction is implemented by reward adapters."""
+    """Combine proxy metrics without letting visual quality mask title regression."""
     components.validate()
     if not components.valid:
         return invalid_reward
@@ -47,4 +47,6 @@ def combine_proxy_reward(
         + weights.integrity * components.integrity
         + weights.area * components.area
     )
+    if components.title_relevance < 0.5:
+        positive_score = min(positive_score, components.title_relevance)
     return positive_score

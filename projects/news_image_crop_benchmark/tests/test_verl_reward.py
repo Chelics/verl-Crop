@@ -46,6 +46,17 @@ class VerlRewardTests(unittest.TestCase):
         self.assertEqual(result["score"], -1.0)
         self.assertEqual(result["format_reward"], 0.0)
 
+    def test_missing_closing_tag_is_scored_with_format_penalty(self):
+        result = self.reward_module.compute_score(
+            data_source="news_image_crop",
+            solution_str='<crop>{"cx":500,"cy":500,"area":400}',
+            ground_truth=json.dumps({"image_width": 100, "image_height": 80, "target_ratio": 1.0}),
+            reward_mode="smoke",
+        )
+
+        self.assertGreater(result["score"], -1.0)
+        self.assertLess(result["format_reward"], 1.0)
+
     def test_proxy_mode_scores_real_image_with_injected_clip_scorer(self):
         with tempfile.TemporaryDirectory() as directory:
             image_path = Path(directory) / "image.png"
@@ -63,6 +74,25 @@ class VerlRewardTests(unittest.TestCase):
         self.assertGreater(result["score"], 0.0)
         self.assertEqual(result["proxy_enabled"], 1.0)
         self.assertAlmostEqual(result["clip_similarity_delta"], 0.1)
+
+    def test_proxy_mode_scores_recovered_action_before_format_penalty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "image.png"
+            Image.new("RGB", (100, 80), color="white").save(image_path)
+            with patch.object(self.reward_module, "get_clip_title_scorer", return_value=_FakeClipScorer()):
+                result = self.reward_module.compute_score(
+                    data_source="news_image_crop",
+                    solution_str='<crop>{"cx":500,"cy":500,"area":400}',
+                    ground_truth=json.dumps({"image_width": 100, "image_height": 80, "target_ratio": 1.0}),
+                    extra_info={"title": "A title", "original_image_path": str(image_path)},
+                    reward_mode="proxy",
+                    clip_model_path="/fake/clip",
+                )
+
+        self.assertGreater(result["score"], 0.0)
+        self.assertEqual(result["format_reward"], 0.5)
+        self.assertEqual(result["strict_format"], 0.0)
+        self.assertEqual(result["proxy_enabled"], 1.0)
 
     def test_proxy_model_failure_is_not_hidden(self):
         with tempfile.TemporaryDirectory() as directory:

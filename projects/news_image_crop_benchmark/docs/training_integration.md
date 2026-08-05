@@ -42,6 +42,8 @@ Use integers only. Do not include explanations or any other text.
 
 训练后必须用相同 test 样本、Prompt、采样参数和 Reward 重新评测，报告相对 zero-shot baseline 的增益。
 
+Baseline 的详细设计和验收门槛见 [baseline_evaluation.md](baseline_evaluation.md)。正式训练不得绕过该门禁。
+
 ## Reward 模式
 
 `smoke`:

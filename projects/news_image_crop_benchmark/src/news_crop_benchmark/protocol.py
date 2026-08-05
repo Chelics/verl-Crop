@@ -2,10 +2,35 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 
 from news_crop_benchmark.geometry import CropAction
 
 _CROP_PATTERN = re.compile(r"<crop>\s*(\{.*?\})\s*</crop>", re.DOTALL)
+_MISSING_CLOSING_TAG_PATTERN = re.compile(r"^\s*<crop>\s*(\{.*\})\s*$", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class CropParseResult:
+    action: CropAction
+    strict_format: bool
+
+
+def _parse_payload(payload_text: str) -> CropAction:
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as error:
+        raise ValueError("crop payload is not valid JSON") from error
+
+    expected_keys = {"cx", "cy", "area"}
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise ValueError(f"crop payload must contain exactly {sorted(expected_keys)}")
+    if any(isinstance(payload[key], bool) or not isinstance(payload[key], int | float) for key in expected_keys):
+        raise ValueError("crop coordinates must be numeric")
+
+    action = CropAction(center_x=float(payload["cx"]), center_y=float(payload["cy"]), area=float(payload["area"]))
+    action.validate()
+    return action
 
 
 def parse_crop_action(response: str) -> CropAction:
@@ -14,17 +39,16 @@ def parse_crop_action(response: str) -> CropAction:
     if match is None:
         raise ValueError("response does not contain a <crop> JSON object")
 
-    try:
-        payload = json.loads(match.group(1))
-    except json.JSONDecodeError as error:
-        raise ValueError("crop payload is not valid JSON") from error
+    return _parse_payload(match.group(1))
 
-    expected_keys = {"cx", "cy", "area"}
-    if set(payload) != expected_keys:
-        raise ValueError(f"crop payload must contain exactly {sorted(expected_keys)}")
-    if any(isinstance(payload[key], bool) or not isinstance(payload[key], int | float) for key in expected_keys):
-        raise ValueError("crop coordinates must be numeric")
 
-    action = CropAction(center_x=float(payload["cx"]), center_y=float(payload["cy"]), area=float(payload["area"]))
-    action.validate()
-    return action
+def parse_crop_action_with_format(response: str) -> CropParseResult:
+    """Parse a crop action and conservatively recover a missing closing tag."""
+    strict_match = _CROP_PATTERN.search(response)
+    if strict_match is not None:
+        return CropParseResult(action=_parse_payload(strict_match.group(1)), strict_format=True)
+
+    recoverable_match = _MISSING_CLOSING_TAG_PATTERN.fullmatch(response)
+    if recoverable_match is None:
+        raise ValueError("response does not contain a recoverable <crop> JSON object")
+    return CropParseResult(action=_parse_payload(recoverable_match.group(1)), strict_format=False)

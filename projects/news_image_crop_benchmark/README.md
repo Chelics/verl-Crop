@@ -56,6 +56,7 @@ All 39,740 sample IDs are unique, all four ratios contain 9,935 rows, and no ori
 config/benchmark.yaml        Versioned benchmark defaults
 docs/environment.md          Local and cluster environment contract
 docs/data_conversion.md      Staged raw-to-verl conversion design
+docs/baseline_evaluation.md  Frozen Qwen baseline and pre-training gates
 docs/experiment_plan.md      Baselines, stages, metrics, and gates
 docs/reward_design.md        Reward definitions and anti-gaming rules
 docs/training_integration.md Concrete reward, dry-run, and GRPO smoke commands
