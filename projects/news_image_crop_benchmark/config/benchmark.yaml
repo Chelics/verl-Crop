@@ -31,8 +31,13 @@ data:
   prompt_template: |-
     <image>
     News title: {title}
-    Target aspect ratio: {target_ratio}
-    Return only <crop>{{"cx": CX, "cy": CY, "area": AREA}}</crop>, where all values are in (0, 1000].
+    Target aspect ratio (width / height): {target_ratio}
+    Select the crop that best illustrates the news title.
+    Return exactly one line: <crop>{{"cx": CX, "cy": CY, "area": AREA}}</crop>
+    CX is the horizontal crop-center coordinate: 0 is the left edge and 1000 is the right edge.
+    CY is the vertical crop-center coordinate: 0 is the top edge and 1000 is the bottom edge.
+    AREA is the crop area as thousandths of the original image area: 1 is 0.1% and 1000 is the full image.
+    Use integers only. Do not include explanations or any other text.
   mm_processor_kwargs:
     size:
       longest_edge: 1048576

@@ -11,6 +11,37 @@
 
 当前 proxy reward 可用于工程联调和早期 GRPO 实验，但尚未成为经过验证的产品质量指标。主体 grounding、人脸/OCR 完整性和人工评测仍是后续验收项。
 
+## 当前 Prompt
+
+训练数据和原始模型 baseline 使用同一个 Prompt：
+
+```text
+<image>
+News title: {title}
+Target aspect ratio (width / height): {target_ratio}
+Select the crop that best illustrates the news title.
+Return exactly one line: <crop>{"cx": CX, "cy": CY, "area": AREA}</crop>
+CX is the horizontal crop-center coordinate: 0 is the left edge and 1000 is the right edge.
+CY is the vertical crop-center coordinate: 0 is the top edge and 1000 is the bottom edge.
+AREA is the crop area as thousandths of the original image area: 1 is 0.1% and 1000 is the full image.
+Use integers only. Do not include explanations or any other text.
+```
+
+模型不直接预测四个 bbox 边界，而是预测归一化中心 `(cx, cy)` 和面积 `area`。程序根据目标比例确定性地计算 bbox，因此生成结果天然满足比例约束。Prompt 使用英文是因为模型和新闻标题以英文为主，同时保持训练与线上推理模板一致。
+
+## 训练前顺序
+
+不要直接开始 GRPO。推荐顺序如下：
+
+1. 固定 test split 和当前 Prompt。
+2. 运行未训练 Qwen3.5-9B 的 vLLM zero-shot baseline。
+3. 保存每个候选动作、格式合法率、面积/中心分布和 proxy reward。
+4. 与中心裁剪和启发式裁剪比较。
+5. 人工检查一小批可视化结果，确认 proxy reward 排序方向基本合理。
+6. 固定 baseline 和 Reward 版本后再启动 GRPO。
+
+训练后必须用相同 test 样本、Prompt、采样参数和 Reward 重新评测，报告相对 zero-shot baseline 的增益。
+
 ## Reward 模式
 
 `smoke`:
@@ -110,7 +141,22 @@ rollout server 默认将上下文限制为 prompt 长度加 response 长度、�
 
 ## 正式 GRPO
 
-完成全量数据转换和一步验收后执行：
+完成全量数据转换和一步验收后，先运行原始模型 baseline：
+
+```bash
+source .venv-qwen35/bin/activate
+python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py \
+  --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B \
+  --data /mnt/blob_output/v-yukunban/news_image_crop_test.parquet \
+  --reward-file $PWD/projects/news_image_crop_benchmark/rewards/crop_reward.py \
+  --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 \
+  --clip-device cuda \
+  --output-dir /mnt/blob_output/v-yukunban/news_image_crop_baselines/qwen3_5_9b_zero_shot \
+  --groups 4 \
+  --n 4
+```
+
+该命令会输出 `details.jsonl` 和 `summary.json`，包含格式合法率、分比例得分、best-of-N 得分以及相对中心裁剪的胜率。保存该结果后再执行正式训练：
 
 ```bash
 PYTHON_BIN=$PWD/.venv-qwen35/bin/python \

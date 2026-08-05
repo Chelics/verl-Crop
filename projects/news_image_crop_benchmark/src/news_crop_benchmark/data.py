@@ -67,9 +67,13 @@ def build_prompt(title: str, target_ratio: float) -> str:
     return (
         "<image>\n"
         f"News title: {clean_title}\n"
-        f"Target aspect ratio: {target_ratio:g}\n"
-        'Return only <crop>{"cx": CX, "cy": CY, "area": AREA}</crop>, '
-        "where CX and CY are in [0, 1000] and AREA is in (0, 1000]."
+        f"Target aspect ratio (width / height): {target_ratio:g}\n"
+        "Select the crop that best illustrates the news title.\n"
+        'Return exactly one line: <crop>{"cx": CX, "cy": CY, "area": AREA}</crop>\n'
+        "CX is the horizontal crop-center coordinate: 0 is the left edge and 1000 is the right edge.\n"
+        "CY is the vertical crop-center coordinate: 0 is the top edge and 1000 is the bottom edge.\n"
+        "AREA is the crop area as thousandths of the original image area: 1 is 0.1% and 1000 is the full image.\n"
+        "Use integers only. Do not include explanations or any other text."
     )
 
 

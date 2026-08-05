@@ -39,7 +39,11 @@ class DatasetConstructionTests(unittest.TestCase):
 
         prompt = row["prompt"][0]["content"]
         self.assertIn("<image>", prompt)
-        self.assertIn("Target aspect ratio: 1.59", prompt)
+        self.assertIn("Target aspect ratio (width / height): 1.59", prompt)
+        self.assertIn("0 is the left edge and 1000 is the right edge", prompt)
+        self.assertIn("0 is the top edge and 1000 is the bottom edge", prompt)
+        self.assertIn("1000 is the full image", prompt)
+        self.assertIn("Do not include explanations", prompt)
         self.assertEqual(row["images"], ["/shared/images/original.webp"])
         self.assertNotIn("known_bad_bbox", row["extra_info"])
         self.assertNotIn("known_bad_crop_path", row["extra_info"])
