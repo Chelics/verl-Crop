@@ -12,6 +12,21 @@ class _FakeClipScorer:
         return 0.20, 0.30
 
 
+class _FakeVLMScorer:
+    def score(self, original, candidate, caption, headline, log_context=None):
+        assert original.size == (100, 80)
+        assert candidate.size == (56, 56)
+        assert caption == "A caption"
+        assert headline == "A title"
+        assert log_context == {
+            "evaluation_id": None,
+            "sample_id": None,
+            "target_ratio": 1.0,
+            "action": {"cx": 500, "cy": 500, "area": 400},
+        }
+        return 0.8, 1.0
+
+
 class VerlRewardTests(unittest.TestCase):
     def setUp(self):
         from importlib.util import module_from_spec, spec_from_file_location
@@ -108,6 +123,29 @@ class VerlRewardTests(unittest.TestCase):
                         reward_mode="proxy",
                         clip_model_path="/fake/clip",
                     )
+
+    def test_vlm_mode_scores_rendered_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "image.png"
+            Image.new("RGB", (100, 80), color="white").save(image_path)
+            with patch.object(self.reward_module, "get_crop_vlm_scorer", return_value=_FakeVLMScorer()):
+                result = self.reward_module.compute_score(
+                    data_source="news_image_crop",
+                    solution_str='<crop>{"cx":500,"cy":500,"area":400}</crop>',
+                    ground_truth=json.dumps({"image_width": 100, "image_height": 80, "target_ratio": 1.0}),
+                    extra_info={
+                        "title": "A title",
+                        "caption": "A caption",
+                        "original_image_path": str(image_path),
+                    },
+                    reward_mode="vlm",
+                    vlm_prompt_path="/fake/prompt.txt",
+                )
+
+        self.assertAlmostEqual(result["score"], 0.8)
+        self.assertEqual(result["vlm_label"], 1.0)
+        self.assertEqual(result["vlm_enabled"], 1.0)
+        self.assertEqual(result["proxy_enabled"], 0.0)
 
 
 if __name__ == "__main__":

@@ -7,10 +7,11 @@ export PYTHONPATH="${PROJECT_ROOT}/src:${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}
 PYTHON_BIN=${PYTHON_BIN:-python3}
 
 MODEL_PATH=${MODEL_PATH:-/mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B}
-TRAIN_FILE=${TRAIN_FILE:-/mnt/blob_output/v-yukunban/news_image_crop_train.parquet}
-TEST_FILE=${TEST_FILE:-/mnt/blob_output/v-yukunban/news_image_crop_validation.parquet}
+TRAIN_FILE=${TRAIN_FILE:-/mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_train.parquet}
+TEST_FILE=${TEST_FILE:-/mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_validation.parquet}
 REWARD_FILE=${REWARD_FILE:-${PROJECT_ROOT}/rewards/crop_reward.py}
 CLIP_MODEL_PATH=${CLIP_MODEL_PATH:-/mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14}
+VLM_PROMPT_PATH=${VLM_PROMPT_PATH:-${PROJECT_ROOT}/config/crop_vlm_prompt.txt}
 
 NNODES=${NNODES:-1}
 NDEVICES_PER_NODE=${NDEVICES_PER_NODE:-8}
@@ -65,8 +66,12 @@ if [[ "${REWARD_MODE}" = proxy && ! -d "${CLIP_MODEL_PATH}" ]]; then
     echo "CLIP_MODEL_PATH is required for proxy reward: ${CLIP_MODEL_PATH}" >&2
     exit 1
 fi
-if [[ "${REWARD_MODE}" != proxy && "${REWARD_MODE}" != smoke ]]; then
-    echo "REWARD_MODE must be proxy or smoke" >&2
+if [[ "${REWARD_MODE}" = vlm && ! -f "${VLM_PROMPT_PATH}" ]]; then
+    echo "VLM_PROMPT_PATH is required for VLM reward: ${VLM_PROMPT_PATH}" >&2
+    exit 1
+fi
+if [[ "${REWARD_MODE}" != proxy && "${REWARD_MODE}" != smoke && "${REWARD_MODE}" != vlm ]]; then
+    echo "REWARD_MODE must be proxy, smoke, or vlm" >&2
     exit 1
 fi
 
@@ -98,6 +103,7 @@ REWARD=(
     +reward.custom_reward_function.reward_kwargs.reward_mode=${REWARD_MODE}
     +reward.custom_reward_function.reward_kwargs.clip_model_path="${CLIP_MODEL_PATH}"
     +reward.custom_reward_function.reward_kwargs.clip_device=${CLIP_DEVICE}
+    +reward.custom_reward_function.reward_kwargs.vlm_prompt_path="${VLM_PROMPT_PATH}"
 )
 
 MODEL=(

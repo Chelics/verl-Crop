@@ -21,6 +21,11 @@ train = [
     "liger-kernel>=0.8.1",
     "qwen-vl-utils>=0.0.14",
 ]
+vlm = [
+    "azure-identity>=1.17.0",
+    "openai>=2.0.0",
+    "Pillow>=10.0.0",
+]
 test = ["pytest>=8.0.0"]
 
 [tool.setuptools]

@@ -2,6 +2,27 @@
 
 审计日期：2026-08-05
 
+## 当前修复状态
+
+2026-08-05 已基于原图 SHA-256 重新去重和划分，并保留旧文件用于审计对照。正式实验应使用以下新产物：
+
+```text
+/mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_train.parquet
+/mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_validation.parquet
+/mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet
+```
+
+新产物从旧数据的 39,740 条任务中移除了 660 条由 URL 别名造成的内容/标题/比例重复任务，保留 39,080 条。2,646 个图片内容组严格按 SHA-256 分配，train/validation/test 两两内容交集均为 0。本文后续第 1 至第 8 节保留的是修复前数据问题及其证据，用于说明为什么必须重划分。
+
+| Split | 图片内容组 | 内容组占比 | 展开任务 | 任务占比 |
+|---|---:|---:|---:|---:|
+| train | 2,143 | 80.99% | 31,884 | 81.59% |
+| validation | 236 | 8.92% | 3,040 | 7.78% |
+| test | 267 | 10.09% | 4,156 | 10.63% |
+| 合计 | 2,646 | 100% | 39,080 | 100% |
+
+任务行比例不会严格等于 80/10/10，因为同一图片内容关联的所有标题都必须留在一个 split，且不同图片的标题数量高度不均衡。四种目标比例仍完全平衡，各 9,770 条。
+
 ## 1. 结论摘要
 
 当前全量数据已经成功转换为 verl 可读取的多模态 Parquet。字段结构、样本 ID、目标比例、图片路径以及按 `OriginalImageUrl` 进行的 split 隔离均通过检查，可以用于工程链路联调。
@@ -443,14 +464,14 @@ validation_test_overlap 86
 
 ## 10. 最终判定
 
-| 维度 | 判定 |
-|---|---|
-| verl schema 与可读性 | 通过 |
-| 样本 ID、Prompt、比例和路径 | 通过 |
-| URL 级 split 隔离 | 通过 |
-| 图片内容级 split 隔离 | **不通过** |
-| 样本权重与主题均衡性 | **需修复或显式降权** |
-| 正式 validation/test 可用性 | **暂不通过** |
-| 工程联调可用性 | 通过 |
+| 维度 | 旧 URL split | 新 SHA-256 split |
+|---|---|---|
+| verl schema 与可读性 | 通过 | 通过 |
+| 样本 ID、Prompt、比例和路径 | 通过 | 通过 |
+| 图片内容级 split 隔离 | **不通过** | **通过，交集为 0** |
+| 内容/标题/比例键唯一性 | 未保证 | **通过，39,080/39,080** |
+| 样本权重与主题均衡性 | **有风险** | **仍需降权或分组报告** |
+| 正式 validation/test 可用性 | **不通过** | 可用于后续 baseline；仍需近重复审计和人工 golden set |
+| 工程联调可用性 | 通过 | 通过 |
 
-综合判定：当前版本可作为工程联调数据，但在基于图片内容重建 split、控制高频内容权重并重新验收之前，不应作为正式实验数据集。
+综合判定：旧 URL split 只保留用于问题复现和历史结果溯源。新 SHA-256 split 已修复精确图片内容泄漏，应作为后续 baseline、训练和 test 抽样的唯一数据入口。SHA-256 无法识别重新压缩或轻微编辑的视觉近重复，高频图片权重和近重复聚类仍是正式质量结论前的剩余风险。

@@ -15,6 +15,7 @@ from news_crop_benchmark.proxy_scorer import (
     relative_title_relevance,
 )
 from news_crop_benchmark.reward import RewardComponents, combine_proxy_reward
+from news_crop_benchmark.vlm_scorer import get_crop_vlm_scorer
 
 DATA_SOURCE = "news_image_crop"
 
@@ -34,6 +35,8 @@ def _empty_result(score: float, format_reward: float = 0.0) -> dict[str, float]:
         "area": 0.0,
         "area_fraction": 0.0,
         "proxy_enabled": 0.0,
+        "vlm_enabled": 0.0,
+        "vlm_label": -1.0,
     }
 
 
@@ -46,19 +49,23 @@ def compute_score(
     clip_model_path: str | None = None,
     clip_device: str = "cpu",
     clip_delta_scale: float = 20.0,
+    vlm_prompt_path: str | None = None,
     recoverable_format_reward: float = 0.5,
     format_penalty_weight: float = 0.1,
 ) -> dict[str, float]:
     """Score a normalized crop action for verl.
 
-    ``smoke`` validates the training plumbing only. ``proxy`` enables CLIP and image-based metrics.
+    ``smoke`` validates the training plumbing only. ``proxy`` enables local proxy metrics, while
+    ``vlm`` sends the original and rendered candidate to an Azure OpenAI visual evaluator.
     """
     if data_source != DATA_SOURCE:
         raise ValueError(f"unsupported data_source: {data_source}")
-    if reward_mode not in {"smoke", "proxy"}:
-        raise ValueError("reward_mode must be 'smoke' or 'proxy'")
+    if reward_mode not in {"smoke", "proxy", "vlm"}:
+        raise ValueError("reward_mode must be 'smoke', 'proxy', or 'vlm'")
     if reward_mode == "proxy" and not clip_model_path:
         raise ValueError("clip_model_path is required in proxy mode")
+    if reward_mode == "vlm" and not vlm_prompt_path:
+        raise ValueError("vlm_prompt_path is required in vlm mode")
     if not 0.0 <= recoverable_format_reward < 1.0:
         raise ValueError("recoverable_format_reward must be in [0, 1)")
     if format_penalty_weight < 0.0:
@@ -99,6 +106,34 @@ def compute_score(
         return _empty_result(score=-1.0, format_reward=format_reward)
 
     candidate = crop_image(original, bbox)
+    if reward_mode == "vlm":
+        caption = str(extra_info.get("caption", "")).strip()
+        vlm_scorer = get_crop_vlm_scorer(str(vlm_prompt_path))
+        quality_score, label = vlm_scorer.score(
+            original,
+            candidate,
+            caption,
+            title,
+            log_context={
+                "evaluation_id": extra_info.get("evaluation_id"),
+                "sample_id": extra_info.get("sample_id"),
+                "target_ratio": target_ratio,
+                "action": {
+                    "cx": parse_result.action.center_x,
+                    "cy": parse_result.action.center_y,
+                    "area": parse_result.action.area,
+                },
+            },
+        )
+        score = max(-1.0, quality_score - format_penalty_weight * (1.0 - format_reward))
+        result = _empty_result(score=float(score), format_reward=format_reward)
+        result.update(
+            strict_format=float(parse_result.strict_format),
+            vlm_enabled=1.0,
+            vlm_label=float(label),
+        )
+        return result
+
     visual = compute_visual_proxy_metrics(original, bbox)
     clip_scorer = get_clip_title_scorer(clip_model_path, device=clip_device)
     original_similarity, candidate_similarity = clip_scorer.score(title, original, candidate)

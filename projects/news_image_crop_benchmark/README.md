@@ -36,19 +36,19 @@ The source Parquet is not passed directly to verl. Preprocessing produces train/
 | verl row schema and group split | Implemented and unit tested |
 | Four-ratio sample expansion | Generated and fully validated |
 | Initial visual proxy adapters | Implemented; product calibration pending |
-| verl dataset conversion | Pending |
+| verl dataset conversion | Generated; checksum split fully validated |
 | Qwen3.5-9B GRPO launcher | Implemented; Hydra config validated |
 | Qwen rollout + actor update | Real rollout and one-step plumbing validated; formal multi-GPU run pending |
 | Human golden evaluation set | Pending |
 
 Current generated data:
 
-- `/mnt/blob_output/v-yukunban/news_image_crop_train.parquet`: 32,948 rows
-- `/mnt/blob_output/v-yukunban/news_image_crop_validation.parquet`: 3,256 rows
-- `/mnt/blob_output/v-yukunban/news_image_crop_test.parquet`: 3,536 rows
+- `/mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_train.parquet`: 31,884 rows
+- `/mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_validation.parquet`: 3,040 rows
+- `/mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet`: 4,156 rows
 - `/mnt/blob_output/v-yukunban/news_image_crop_assets/`: 5,672 unique originals, about 1.70 GB
 
-All 39,740 sample IDs are unique, all four ratios contain 9,935 rows, and no original image crosses splits.
+The 5,672 source URLs contain 2,646 exact image contents. All 39,080 sample IDs are unique, all four ratios contain 9,770 rows, and the image SHA-256 intersections between splits are empty. The previous URL-based Parquets remain in the parent directory only for audit comparison and must not be used for formal experiments.
 
 ## Layout
 
@@ -56,11 +56,13 @@ All 39,740 sample IDs are unique, all four ratios contain 9,935 rows, and no ori
 config/benchmark.yaml        Versioned benchmark defaults
 docs/environment.md          Local and cluster environment contract
 docs/data_conversion.md      Staged raw-to-verl conversion design
+docs/data_quality_audit.md   URL-alias leakage evidence and corrected split validation
 docs/baseline_evaluation.md  Frozen Qwen baseline and pre-training gates
 docs/experiment_plan.md      Baselines, stages, metrics, and gates
 docs/reward_design.md        Reward definitions and anti-gaming rules
 docs/training_integration.md Concrete reward, dry-run, and GRPO smoke commands
 scripts/inspect_source.py    Read-only source Parquet audit
+scripts/resplit_by_image_content.py  Rebuild splits from an existing asset manifest
 src/news_crop_benchmark/     Reusable benchmark code
 tests/                       Focused unit tests
 ```

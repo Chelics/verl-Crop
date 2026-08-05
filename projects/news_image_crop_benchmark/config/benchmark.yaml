@@ -11,7 +11,7 @@ paths:
 
 conversion:
   source_batch_size: 16
-  deduplicate_by: [OriginalImageUrl, GemTitle]
+  deduplicate_by: [OriginalImageSha256, GemTitle]
   expand_all_target_ratios: true
 
 data:
@@ -22,7 +22,7 @@ data:
   unpaired_cropped_url_is_training_signal: false
   unpaired_reason_key: Reason
   unpaired_reason_is_training_signal: false
-  group_split_key: OriginalImageUrl
+  group_split_key: OriginalImageSha256
   target_ratios: [1.0, 1.91, 1.77, 1.59]
   split_fractions:
     train: 0.8

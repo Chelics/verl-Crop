@@ -18,7 +18,6 @@ from PIL import Image
 from news_crop_benchmark.data import (
     SPLIT_NAMES,
     assign_group_split,
-    asset_id,
     build_verl_row,
     training_sample_id,
 )
@@ -107,11 +106,10 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
 def materialize_asset(
     *,
     payload: bytes,
-    original_url: str,
     asset_root: Path,
 ) -> dict[str, Any]:
     extension, width, height, checksum = inspect_image(payload)
-    identifier = asset_id(original_url)
+    identifier = checksum
     path = (asset_root / identifier[:2] / f"{identifier}.{extension}").resolve()
 
     if path.exists():
@@ -193,7 +191,7 @@ def convert_dataset(
                 current_asset = previous_asset
             else:
                 try:
-                    current_asset = materialize_asset(payload=payload, original_url=original_url, asset_root=asset_root)
+                    current_asset = materialize_asset(payload=payload, asset_root=asset_root)
                 except (OSError, ValueError):
                     invalid_images += 1
                     rejected_asset_urls.add(original_url)
@@ -202,14 +200,14 @@ def convert_dataset(
                 if original_url not in rejected_asset_urls:
                     assets[original_url] = current_asset
 
-            pair_key = (original_url, title)
+            pair_key = (current_asset["checksum"], title)
             if pair_key in trusted_pairs:
                 duplicate_title_image_pairs += 1
                 continue
             trusted_pairs[pair_key] = {
                 "source_row_index": source_row_index,
                 "trace_id": row["TraceId"],
-                "original_url": original_url,
+                "image_checksum": current_asset["checksum"],
                 "title": title,
             }
         if stop:
@@ -220,15 +218,19 @@ def convert_dataset(
     skipped_pairs_missing_asset = 0
     expanded_index = 0
     seen_training_ids: set[str] = set()
+    assets_by_checksum: dict[str, dict[str, Any]] = {}
+    for original_url, asset in assets.items():
+        if original_url not in rejected_asset_urls:
+            assets_by_checksum.setdefault(asset["checksum"], asset)
 
-    for (original_url, title), pair in trusted_pairs.items():
-        asset = assets.get(original_url)
-        if asset is None or original_url in rejected_asset_urls:
+    for (image_checksum, title), pair in trusted_pairs.items():
+        asset = assets_by_checksum.get(image_checksum)
+        if asset is None:
             skipped_pairs_missing_asset += 1
             continue
-        split = assign_group_split(original_url, seed=seed)
+        split = assign_group_split(image_checksum, seed=seed)
         for target_ratio in TARGET_RATIOS:
-            identifier = training_sample_id(original_url, title, target_ratio)
+            identifier = training_sample_id(image_checksum, title, target_ratio)
             if identifier in seen_training_ids:
                 raise ValueError(f"duplicate training sample ID: {identifier}")
             seen_training_ids.add(identifier)
@@ -273,6 +275,9 @@ def convert_dataset(
         "limit": limit,
         "source_rows": source_rows,
         "unique_original_assets": len(manifest_rows),
+        "unique_original_image_contents": len(assets_by_checksum),
+        "split_group_key": "image_checksum",
+        "trusted_pair_key": ["image_checksum", "normalized_title"],
         "unique_trusted_title_image_pairs": len(trusted_pairs) - skipped_pairs_missing_asset,
         "duplicate_title_image_pairs": duplicate_title_image_pairs,
         "expanded_rows": sum(len(rows) for rows in rows_by_split.values()),

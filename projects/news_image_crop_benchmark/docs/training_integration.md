@@ -6,6 +6,7 @@
 - 确定性动作解析和严格比例裁剪渲染
 - 基于缓存 CLIP-L/14、以原图为基线的标题相关性
 - 梯度显著性、显著性中心构图、裁剪边界完整性和最小面积得分
+- Azure OpenAI 多模态裁剪质量 Reward，可选 API key 或 managed identity 认证
 - Qwen3.5-9B FSDP2/vLLM 启动脚本：`run_qwen3_5_9b_grpo.sh`
 - 持久化联调数据：`/mnt/blob_output/v-yukunban/news_image_crop_smoke_*.parquet`
 
@@ -59,7 +60,71 @@ Baseline 的详细设计和验收门槛见 [baseline_evaluation.md](baseline_eva
 - 计算基于图片的 proxy 指标；
 - CLIP 无法加载或推理时直接让任务失败，而不是静默返回错误 Reward。
 
+`vlm`:
+
+- 保留与其他模式相同的输出协议、图片边界和目标宽高比硬校验；
+- 将原图和实际渲染的候选裁剪图发送给 Azure OpenAI Responses API；
+- 使用 `config/crop_vlm_prompt.txt` 的固定 rubric，将 Tier 0–5 映射为 `1.0–0.0` Reward；
+- 缺少 caption 时显式传入 `[not provided]`，不会使用 `CroppedImageUrl` 或 `Reason`；
+- 使用 Responses API 流式读取完整评价，避免双图长 rubric 在等待首个同步响应时超时；
+- 请求默认重试两次，全部失败后返回可配置的 Tier 5（Reward `0`）；
+- verl 的 `compute_score` 是逐样本同步回调，因此请求并发由 `REWARD_NUM_WORKERS` 控制，每个 worker 缓存一个客户端。
+
 返回字典中的每个字段都会由 verl 作为 Reward 指标继续传递。
+
+## VLM Reward 配置
+
+先在训练环境安装可选依赖：
+
+```bash
+uv pip install --python .venv-qwen35/bin/python \
+  -e 'projects/news_image_crop_benchmark[vlm]'
+```
+
+认证优先读取 API key；未设置 API key 时使用 managed identity：
+
+```bash
+export GPT5_AZURE_OPENAI_API_KEY=...  # 使用 managed identity 时不要设置
+export GPT5_AZURE_OPENAI_ENDPOINT=https://csnf-singularity-aoai-eastus2.openai.azure.com/
+export GPT5_AZURE_OPENAI_DEPLOYMENT=gpt-5.6-sol
+export GPT5_AZURE_OPENAI_API_VERSION=2025-04-01-preview
+export GPT5_AZURE_MANAGED_IDENTITY_CLIENT_ID=e6162a0d-e540-4454-995f-30bcb97f35b4
+```
+
+也可以把这些变量放在仓库根目录或项目目录的 `.env` 中；不要提交包含密钥的 `.env`。常用调优变量包括：
+
+- `CROP_VLM_TIMEOUT=45`
+- `CROP_VLM_MAX_RETRIES=2`
+- `CROP_VLM_FALLBACK_LABEL=5.0`
+- `CROP_VLM_IMAGE_SIZE=384`
+- `CROP_VLM_IMAGE_FORMAT=JPEG`
+- `CROP_VLM_JPEG_QUALITY=70`
+- `CROP_VLM_MAX_OUTPUT_TOKENS=1024`
+- `CROP_VLM_REASONING_EFFORT=low`
+- `CROP_VLM_OUTPUT_VERBOSITY=low`
+- `CROP_VLM_LOG_PATH=/shared/output/vlm_responses.jsonl`
+
+`CROP_VLM_LOG_PATH` 未设置时不保存原始响应。设置后，每个请求会追加一条 JSONL，包含 deployment、response ID、标题、样本/裁切动作上下文、解析后的 Tier/Reward 和完整模型输出。日志不包含 API key、managed identity token 或图片 base64；但标题和模型分析仍可能是敏感数据，应写入受控目录并按实验产物管理。
+
+启动一步 VLM Reward 联调：
+
+```bash
+PYTHON_BIN=$PWD/.venv-qwen35/bin/python \
+REWARD_MODE=vlm \
+REWARD_NUM_WORKERS=1 \
+TRAIN_FILE=/mnt/blob_output/v-yukunban/news_image_crop_smoke_train.parquet \
+TEST_FILE=/mnt/blob_output/v-yukunban/news_image_crop_smoke_validation.parquet \
+TRAIN_MAX_SAMPLES=2 \
+VAL_MAX_SAMPLES=2 \
+TRAIN_BATCH_SIZE=2 \
+PPO_MINI_BATCH_SIZE=2 \
+ROLLOUT_N=2 \
+TOTAL_TRAINING_STEPS=1 \
+TEST_FREQ=-1 \
+projects/news_image_crop_benchmark/run_qwen3_5_9b_grpo.sh
+```
+
+先保持 `REWARD_NUM_WORKERS=1` 验证 Azure 限流和端到端延迟，再逐步增加 worker。VLM 模式会返回 `vlm_label` 和 `vlm_enabled`；proxy 分项保持为 `0`，避免将两套 Reward 混为一谈。
 
 ## 本地 Reward 联调
 
@@ -149,7 +214,7 @@ rollout server 默认将上下文限制为 prompt 长度加 response 长度、�
 source .venv-qwen35/bin/activate
 python projects/news_image_crop_benchmark/scripts/evaluate_vllm_baseline.py \
   --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B \
-  --data /mnt/blob_output/v-yukunban/news_image_crop_test.parquet \
+  --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_test.parquet \
   --reward-file $PWD/projects/news_image_crop_benchmark/rewards/crop_reward.py \
   --clip-model-path /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14 \
   --clip-device cuda \
