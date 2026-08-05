@@ -42,7 +42,7 @@ from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import get_resource_name, get_visible_devices_keyword, is_torch_npu_available
 from verl.utils.net_utils import get_free_port, is_valid_ipv6_address
 from verl.utils.profiler import DistProfiler, build_vllm_profiler_args
-from verl.utils.tokenizer import normalize_token_ids
+from verl.utils.tokenizer import normalize_token_ids, to_plain_container
 from verl.utils.tracking import RLInsightLogger
 from verl.utils.vllm.vllm_quant_utils import apply_vllm_quant_patches
 from verl.workers.config import HFModelConfig, RolloutConfig
@@ -596,7 +596,7 @@ class vLLMHttpServer:
 
         prompt_kwargs = {"prompt_token_ids": prompt_ids, "multi_modal_data": multi_modal_data}
         if mm_processor_kwargs:
-            prompt_kwargs["mm_processor_kwargs"] = mm_processor_kwargs
+            prompt_kwargs["mm_processor_kwargs"] = to_plain_container(mm_processor_kwargs)
         try:
             prompt = TokensPrompt(**prompt_kwargs)
         except TypeError:

@@ -1,0 +1,93 @@
+schema_version: 1
+
+project:
+  name: news_image_crop_benchmark
+  seed: 42
+
+paths:
+  model: /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B
+  source_parquet: /mnt/blob_output/v-yukunban/imageCroppingDataset_cropped_binary.parquet
+  work_dir: /mnt/blob_output/v-yukunban/news_image_crop_benchmark
+
+conversion:
+  source_batch_size: 16
+  deduplicate_by: [OriginalImageUrl, GemTitle]
+  expand_all_target_ratios: true
+
+data:
+  title_key: GemTitle
+  original_bytes_key: OriginalImageBytes
+  original_url_key: OriginalImageUrl
+  unpaired_cropped_url_key: CroppedImageUrl
+  unpaired_cropped_url_is_training_signal: false
+  unpaired_reason_key: Reason
+  unpaired_reason_is_training_signal: false
+  group_split_key: OriginalImageUrl
+  target_ratios: [1.0, 1.91, 1.77, 1.59]
+  split_fractions:
+    train: 0.8
+    validation: 0.1
+    test: 0.1
+  prompt_template: |-
+    <image>
+    News title: {title}
+    Target aspect ratio: {target_ratio}
+    Return only <crop>{{"cx": CX, "cy": CY, "area": AREA}}</crop>, where all values are in (0, 1000].
+  mm_processor_kwargs:
+    size:
+      longest_edge: 1048576
+      shortest_edge: 65536
+  apply_chat_template_kwargs:
+    enable_thinking: false
+
+action:
+  representation: center_area
+  scale: 1000
+  output_tag: crop
+
+reward:
+  invalid_output: -1.0
+  weights:
+    title_relevance: 0.45
+    saliency: 0.20
+    composition: 0.15
+    integrity: 0.10
+    area: 0.10
+  adapters:
+    title_relevance: /mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14
+    saliency: gradient_energy
+    composition: saliency_centroid
+    integrity: crop_boundary_energy
+    subject_grounding: null
+    face_detection: null
+    ocr: null
+    aesthetic: null
+
+training:
+  algorithm: grpo
+  actor_strategy: fsdp2
+  rollout_backend: vllm
+  rollout_n: 8
+  rollout_temperature: 0.7
+  rollout_top_p: 0.95
+  rollout_max_model_len: 2176
+  rollout_max_num_seqs: 16
+  rollout_enforce_eager: true
+  train_batch_size: 64
+  ppo_mini_batch_size: 16
+  ppo_micro_batch_size_per_gpu: 1
+  learning_rate: 5.0e-7
+  max_prompt_length: 2048
+  max_response_length: 128
+  gradient_checkpointing: true
+  n_gpus_per_node: 8
+  nnodes: 1
+
+evaluation:
+  human_gold_size: 300
+  compare_against:
+    - center_crop
+    - heuristic_crop
+    - qwen35_zero_shot
+    - pseudo_sft
+    - grpo

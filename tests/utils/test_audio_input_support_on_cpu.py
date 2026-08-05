@@ -16,9 +16,10 @@ import types
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
 from verl.utils.model import extract_multi_modal_inputs
-from verl.utils.tokenizer import build_multimodal_processor_inputs
+from verl.utils.tokenizer import build_multimodal_processor_inputs, to_plain_container
 
 
 def test_build_messages_replaces_audio_placeholder() -> None:
@@ -92,6 +93,36 @@ def test_build_multimodal_processor_inputs_skips_video_kwargs_when_no_videos() -
     )
     assert "do_sample_frames" not in captured
     assert "video_metadata" not in captured
+
+
+def test_build_multimodal_processor_inputs_converts_nested_omegaconf() -> None:
+    captured = {}
+
+    class ImageProcessor:
+        def __call__(self, **kwargs):
+            captured.update(kwargs)
+            return {"input_ids": torch.tensor([[1, 2, 3]])}
+
+    build_multimodal_processor_inputs(
+        ImageProcessor(),
+        text=["hello"],
+        images=["image"],
+        mm_processor_kwargs={
+            "size": OmegaConf.create({"longest_edge": 1048576, "shortest_edge": 65536})
+        },
+    )
+
+    assert captured["size"] == {"longest_edge": 1048576, "shortest_edge": 65536}
+    assert type(captured["size"]) is dict
+
+
+def test_to_plain_container_converts_nested_omegaconf_inside_plain_dict() -> None:
+    result = to_plain_container(
+        {"size": OmegaConf.create({"longest_edge": 1048576, "shortest_edge": 65536})}
+    )
+
+    assert result == {"size": {"longest_edge": 1048576, "shortest_edge": 65536}}
+    assert type(result["size"]) is dict
 
 
 def test_extract_multi_modal_inputs_merges_variable_audio_fields() -> None:

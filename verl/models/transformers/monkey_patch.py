@@ -503,6 +503,7 @@ def apply_monkey_patch(
             Qwen3_5Model,
             Qwen3_5TextModel,
             Qwen3_5VisionModel,
+            Qwen3_5VisionRotaryEmbedding,
         )
         from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
             Qwen3_5MoeDecoderLayer,
@@ -511,6 +512,7 @@ def apply_monkey_patch(
             Qwen3_5MoeModel,
             Qwen3_5MoeTextModel,
             Qwen3_5MoeVisionModel,
+            Qwen3_5MoeVisionRotaryEmbedding,
         )
 
         from verl.models.transformers.qwen3_5 import (
@@ -519,6 +521,7 @@ def apply_monkey_patch(
             qwen3_5_base_forward,
             qwen3_5_decoder_layer_forward,
             qwen3_5_gated_delta_net_forward,
+            vision_rotary_embedding_forward,
         )
 
         Qwen3_5Model.forward = qwen3_5_base_forward
@@ -534,6 +537,8 @@ def apply_monkey_patch(
         # Step 2: patch vision model to fix fsdp2 cpu_offload bug.
         Qwen3_5VisionModel.fast_pos_embed_interpolate = fast_pos_embed_interpolate
         Qwen3_5MoeVisionModel.fast_pos_embed_interpolate = fast_pos_embed_interpolate
+        Qwen3_5VisionRotaryEmbedding.forward = vision_rotary_embedding_forward
+        Qwen3_5MoeVisionRotaryEmbedding.forward = vision_rotary_embedding_forward
         if ulysses_sp_size > 1:
             patch_vlm_for_ulysses_input_slicing(Qwen3_5TextModel)
             patch_vlm_for_ulysses_input_slicing(Qwen3_5MoeTextModel)

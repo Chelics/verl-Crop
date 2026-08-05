@@ -38,6 +38,11 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def vision_rotary_embedding_forward(self, position_ids: torch.Tensor) -> torch.Tensor:
+    inv_freq = self.inv_freq.to(device=position_ids.device)
+    return (position_ids.unsqueeze(-1) * inv_freq).flatten(1)
+
+
 def _call_accepts_kwarg(fn, name: str) -> bool:
     params = signature(fn).parameters
     return name in params or any(param.kind == param.VAR_KEYWORD for param in params.values())

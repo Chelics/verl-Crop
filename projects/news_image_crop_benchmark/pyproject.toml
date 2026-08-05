@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "news-image-crop-benchmark"
+version = "0.1.0"
+description = "Benchmark for title-conditioned news image cropping with verl"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+data = [
+    "numpy>=2.0.0",
+    "opencv-python>=4.10.0",
+    "Pillow>=10.0.0",
+    "pyarrow>=19.0.0",
+]
+train = [
+    "TransferQueue==0.1.8",
+    "liger-kernel>=0.8.1",
+    "qwen-vl-utils>=0.0.14",
+]
+test = ["pytest>=8.0.0"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120

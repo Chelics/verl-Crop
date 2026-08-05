@@ -16,12 +16,15 @@
 import types
 import warnings
 
+from omegaconf import OmegaConf
+
 __all__ = [
     "hf_tokenizer",
     "hf_processor",
     "normalize_token_ids",
     "build_multimodal_processor_inputs",
     "get_processor_token_id",
+    "to_plain_container",
 ]
 
 
@@ -99,6 +102,18 @@ def _split_videos_and_metadata(videos):
     return videos, None
 
 
+def to_plain_container(value):
+    if OmegaConf.is_config(value):
+        return OmegaConf.to_container(value, resolve=True)
+    if isinstance(value, dict):
+        return {key: to_plain_container(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [to_plain_container(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(to_plain_container(item) for item in value)
+    return value
+
+
 def build_multimodal_processor_inputs(
     processor,
     *,
@@ -114,7 +129,8 @@ def build_multimodal_processor_inputs(
     This keeps the existing VL flow intact while extending it with audio-aware
     paths for processors that accept audio inputs.
     """
-    processor_kwargs = dict(mm_processor_kwargs or {})
+    processor_kwargs = to_plain_container(mm_processor_kwargs)
+    processor_kwargs = dict(processor_kwargs or {})
     if audio is not None and "sampling_rate" not in processor_kwargs:
         sampling_rate = getattr(getattr(processor, "feature_extractor", None), "sampling_rate", None)
         if sampling_rate is not None:

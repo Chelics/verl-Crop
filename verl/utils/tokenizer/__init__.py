@@ -18,6 +18,7 @@ from .tokenizer import (
     hf_processor,
     hf_tokenizer,
     normalize_token_ids,
+    to_plain_container,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "normalize_token_ids",
     "build_multimodal_processor_inputs",
     "get_processor_token_id",
+    "to_plain_container",
 ]

@@ -18,6 +18,7 @@ Not recommended depending on vllm for this file.
 """
 
 import gc
+import inspect
 import logging
 import os
 from multiprocessing import shared_memory
@@ -46,9 +47,12 @@ def rebuild_ipc(handle: tuple[Callable, tuple], device_id: int | None = None) ->
     func, args = handle
     list_args = list(args)
     if device_id is not None:
-        # the key is to change device id to the current device id
-        # in case two processes have different CUDA_VISIBLE_DEVICES
-        list_args[6] = device_id
+        parameters = tuple(inspect.signature(func).parameters)
+        for device_parameter in ("storage_device", "tensor_device", "device"):
+            if device_parameter in parameters:
+                # CUDA IPC device ordinals can differ across CUDA_VISIBLE_DEVICES namespaces.
+                list_args[parameters.index(device_parameter)] = device_id
+                break
     buffer = func(*list_args)
     return buffer
 
@@ -280,6 +284,8 @@ class BucketedWeightReceiver:
                     shape, dtype, offset, handle = meta["shape"], meta["dtype"], meta["offset"], meta["handle"]
                     if handle is not None:
                         tensor = rebuild_ipc(handle, self.device.index)
+                        if tensor.device != self.device:
+                            tensor = tensor.to(self.device)
                         weights.append((name, tensor))
                         continue
                     size = dtype.itemsize * shape.numel()
