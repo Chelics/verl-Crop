@@ -5,7 +5,6 @@ import argparse
 import csv
 import importlib.util
 import json
-import shutil
 from pathlib import Path
 
 
@@ -19,6 +18,12 @@ def load_baseline_module():
     return module
 
 
+def shard_render_path(shard_index: int, render_path: str | None) -> str | None:
+    if render_path is None:
+        return None
+    return (Path("..") / f"shard-{shard_index}" / render_path).as_posix()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Merge distributed Qwen crop baseline shards.")
     parser.add_argument("--data", type=Path, required=True)
@@ -30,8 +35,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.shard_count <= 0:
         raise ValueError("shard-count must be positive")
-    if args.output_dir.exists() and any(args.output_dir.iterdir()):
-        raise FileExistsError(f"merge output directory is not empty: {args.output_dir}")
+    if args.output_dir.exists():
+        unexpected_outputs = [path for path in args.output_dir.iterdir() if path.name != "renders"]
+        if unexpected_outputs:
+            raise FileExistsError(f"merge output directory contains prior reports: {args.output_dir}")
 
     baseline = load_baseline_module()
     selected_rows = baseline.select_complete_groups(args.data, None, args.seed)
@@ -69,8 +76,6 @@ def main() -> None:
     }
     reference_config = None
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    render_dir = args.output_dir / "renders"
-    render_dir.mkdir(parents=True, exist_ok=True)
 
     for shard_index in range(args.shard_count):
         shard_dir = args.shard_root / f"shard-{shard_index}"
@@ -90,14 +95,19 @@ def main() -> None:
             raise ValueError(f"shard {shard_index} configuration does not match the other shards")
         for line in (shard_dir / "details.jsonl").read_text(encoding="utf-8").splitlines():
             if line:
-                details.append(json.loads(line))
+                detail = json.loads(line)
+                detail["render_path"] = shard_render_path(shard_index, detail["render_path"])
+                details.append(detail)
         for progress_path in (shard_dir / ".score_progress").glob("*.json"):
             progress = json.loads(progress_path.read_text(encoding="utf-8"))
             sample_id = str(progress["sample_id"])
-            center_baselines[sample_id] = progress["center_baseline"]
-            center_scores[sample_id] = float(progress["center_baseline"]["score"])
-        for render_path in (shard_dir / "renders").glob("*.jpg"):
-            shutil.copy2(render_path, render_dir / render_path.name)
+            center_baseline = progress["center_baseline"]
+            center_baseline["render_path"] = shard_render_path(shard_index, center_baseline["render_path"])
+            center_baseline["original_render_path"] = shard_render_path(
+                shard_index, center_baseline["original_render_path"]
+            )
+            center_baselines[sample_id] = center_baseline
+            center_scores[sample_id] = float(center_baseline["score"])
 
     actual_sample_ids = {str(detail["sample_id"]) for detail in details}
     if actual_sample_ids != expected_sample_ids:

@@ -187,6 +187,10 @@ class CropVLMScorer:
         self.output_verbosity = os.getenv("CROP_VLM_OUTPUT_VERBOSITY", "low").strip().lower()
         response_log_path = os.getenv("CROP_VLM_LOG_PATH", "").strip()
         self.response_log_path = Path(response_log_path) if response_log_path else None
+        visual_log_dir = os.getenv("CROP_VLM_VISUAL_LOG_DIR", "").strip()
+        self.visual_log_dir = Path(visual_log_dir) if visual_log_dir else None
+        self.visual_log_every = int(os.getenv("CROP_VLM_VISUAL_LOG_EVERY", "0"))
+        self._visual_log_counter = 0
         self.preprocess_mode = os.getenv("CROP_VLM_PREPROCESS_MODE", "letterbox").strip().lower()
         self.background_color = _parse_rgb(os.getenv("CROP_VLM_BG_COLOR", "255,255,255"))
 
@@ -194,6 +198,10 @@ class CropVLMScorer:
             raise ValueError("CROP_VLM_MAX_RETRIES must be non-negative")
         if self.eval_image_size <= 0:
             raise ValueError("CROP_VLM_IMAGE_SIZE must be positive")
+        if self.visual_log_every < 0:
+            raise ValueError("CROP_VLM_VISUAL_LOG_EVERY must be non-negative")
+        if self.visual_log_every and self.visual_log_dir is None:
+            raise ValueError("CROP_VLM_VISUAL_LOG_DIR is required when CROP_VLM_VISUAL_LOG_EVERY is positive")
         if self.image_format not in {"JPEG", "PNG"}:
             raise ValueError("CROP_VLM_IMAGE_FORMAT must be JPEG or PNG")
         if self.reasoning_effort not in {"low", "medium", "high"}:
@@ -212,6 +220,38 @@ class CropVLMScorer:
             return image.convert("RGB").resize((self.eval_image_size, self.eval_image_size))
         return _resize_with_padding(image, self.eval_image_size, self.background_color)
 
+    def _save_visual_artifacts(
+        self,
+        original: Image.Image,
+        candidate: Image.Image,
+        log_context: dict[str, Any] | None,
+    ) -> dict[str, str] | None:
+        if self.visual_log_dir is None or self.visual_log_every == 0:
+            return None
+
+        self._visual_log_counter += 1
+        if self._visual_log_counter % self.visual_log_every != 0:
+            return None
+
+        context = log_context or {}
+        sample_id = str(context.get("sample_id", "sample"))
+        safe_sample_id = re.sub(r"[^A-Za-z0-9_.-]", "_", sample_id)
+        suffix = f"{safe_sample_id}_{os.getpid()}_{self._visual_log_counter:06d}"
+        extension = "jpg" if self.image_format == "JPEG" else "png"
+        self.visual_log_dir.mkdir(parents=True, exist_ok=True)
+        original_path = self.visual_log_dir / f"{suffix}_original.{extension}"
+        candidate_path = self.visual_log_dir / f"{suffix}_candidate.{extension}"
+        save_kwargs: dict[str, Any] = {"quality": self.jpeg_quality} if self.image_format == "JPEG" else {}
+        original.save(original_path, format=self.image_format, **save_kwargs)
+        candidate.save(candidate_path, format=self.image_format, **save_kwargs)
+
+        if self.response_log_path is None:
+            return {"original": str(original_path), "candidate": str(candidate_path)}
+        return {
+            "original": Path(os.path.relpath(original_path, self.response_log_path.parent)).as_posix(),
+            "candidate": Path(os.path.relpath(candidate_path, self.response_log_path.parent)).as_posix(),
+        }
+
     def score(
         self,
         original: Image.Image,
@@ -220,16 +260,11 @@ class CropVLMScorer:
         headline: str,
         log_context: dict[str, Any] | None = None,
     ) -> tuple[float, float]:
-        original_url = _pil_image_to_data_url(
-            self._prepare_image(original),
-            self.image_format,
-            self.jpeg_quality,
-        )
-        candidate_url = _pil_image_to_data_url(
-            self._prepare_image(candidate),
-            self.image_format,
-            self.jpeg_quality,
-        )
+        original_prepared = self._prepare_image(original)
+        candidate_prepared = self._prepare_image(candidate)
+        visual_artifacts = self._save_visual_artifacts(original_prepared, candidate_prepared, log_context)
+        original_url = _pil_image_to_data_url(original_prepared, self.image_format, self.jpeg_quality)
+        candidate_url = _pil_image_to_data_url(candidate_prepared, self.image_format, self.jpeg_quality)
         user_text = (
             f"{self.rule_prompt}\n\n"
             "Input Fields:\n"
@@ -240,8 +275,10 @@ class CropVLMScorer:
         )
 
         last_error: Exception | None = None
+        score_started = time.perf_counter()
         for attempt in range(self.max_retries + 1):
             try:
+                request_started = time.perf_counter()
                 with self.client.responses.stream(
                     model=self.model,
                     input=[
@@ -262,6 +299,7 @@ class CropVLMScorer:
                     timeout=self.request_timeout,
                 ) as stream:
                     response = stream.get_final_response()
+                request_latency_ms = (time.perf_counter() - request_started) * 1000
                 output_text = extract_response_text(response)
                 label = parse_label(output_text, self.parse_fallback_label)
                 reward = (5.0 - label) / 5.0
@@ -273,11 +311,15 @@ class CropVLMScorer:
                             "status": "completed",
                             "model": self.model,
                             "response_id": getattr(response, "id", None),
+                            "attempt": attempt + 1,
+                            "request_latency_ms": round(request_latency_ms, 2),
+                            "latency_ms": round((time.perf_counter() - score_started) * 1000, 2),
                             "headline": headline,
                             "context": log_context or {},
                             "label": label,
                             "reward": reward,
                             "output_text": output_text,
+                            "visual_artifacts": visual_artifacts,
                         },
                     )
                 return reward, label
@@ -300,10 +342,13 @@ class CropVLMScorer:
                     "status": "failed",
                     "model": self.model,
                     "headline": headline,
+                    "attempts": self.max_retries + 1,
+                    "latency_ms": round((time.perf_counter() - score_started) * 1000, 2),
                     "context": log_context or {},
                     "label": label,
                     "reward": reward,
                     "error_type": type(last_error).__name__,
+                    "visual_artifacts": visual_artifacts,
                 },
             )
         return reward, label

@@ -1,0 +1,62 @@
+# yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
+description: One-thousand-prompt, four-rollout VLM reward GRPO pilot with sampled judge visuals
+
+target:
+  service: manifold
+  name: Recall
+  workspace_name: CS-NewsAndFeeds-Singularity
+
+storage:
+  blob_output:
+    storage_account_name: csnewsandfeeds4150361735
+    container_name: unium
+    mount_dir: /mnt/blob_output
+    is_output: true
+
+environment:
+  image: amlt-sing/acpt-torch2.8.x-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - python -m pip install uv
+    - uv python install 3.12
+    - uv venv --seed --python 3.12 .venv-qwen35
+    - uv pip install --python .venv-qwen35/bin/python "vllm==0.24.0"
+    - uv pip install --python .venv-qwen35/bin/python -e .
+    - uv pip install --python .venv-qwen35/bin/python -e "projects/news_image_crop_benchmark[data,train,test,vlm]"
+    - uv pip uninstall --python .venv-qwen35/bin/python opencv-python
+    - uv pip install --python .venv-qwen35/bin/python --reinstall opencv-python-headless
+
+code:
+  local_dir: $CONFIG_DIR
+
+jobs:
+  - name: vlm-grpo-1k-pilot
+    sku: 80G8-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: /subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895/resourceGroups/AMLStudio/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml
+    command: |
+      set -euo pipefail
+      export CROP_VLM_LOG_PATH="$$AMLT_OUTPUT_DIR/vlm_responses.jsonl"
+      export CROP_VLM_VISUAL_LOG_DIR="$$AMLT_OUTPUT_DIR/vlm_visuals"
+      export CROP_VLM_VISUAL_LOG_EVERY=25
+      export CROP_VLM_TIMEOUT=45
+      export CROP_VLM_MAX_RETRIES=2
+      PYTHON_BIN=.venv-qwen35/bin/python \
+      REWARD_MODE=vlm \
+      REWARD_NUM_WORKERS=1 \
+      TRAIN_FILE=/mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_train.parquet \
+      TEST_FILE=/mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_validation.parquet \
+      TRAIN_MAX_SAMPLES=1000 \
+      VAL_MAX_SAMPLES=100 \
+      TRAIN_BATCH_SIZE=8 \
+      PPO_MINI_BATCH_SIZE=8 \
+      ROLLOUT_N=4 \
+      TOTAL_TRAINING_STEPS=125 \
+      TEST_FREQ=-1 \
+      SAVE_FREQ=100 \
+      OUTPUT_DIR="$$AMLT_OUTPUT_DIR/checkpoints" \
+      PROJECT_NAME=news_image_crop_vlm_grpo \
+      EXPERIMENT_NAME=vlm_grpo_1k_n4 \
+      bash projects/news_image_crop_benchmark/run_qwen3_5_9b_grpo.sh

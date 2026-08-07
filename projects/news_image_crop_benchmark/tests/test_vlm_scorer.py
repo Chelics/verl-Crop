@@ -49,6 +49,9 @@ def _make_scorer(responses: _FakeResponses) -> CropVLMScorer:
     scorer.reasoning_effort = "low"
     scorer.output_verbosity = "low"
     scorer.response_log_path = None
+    scorer.visual_log_dir = None
+    scorer.visual_log_every = 0
+    scorer._visual_log_counter = 0
     scorer.preprocess_mode = "letterbox"
     scorer.background_color = (255, 255, 255)
     scorer.rule_prompt = "Evaluate the crop."
@@ -121,3 +124,30 @@ def test_score_logs_complete_response_without_image_payloads(tmp_path):
     assert record["label"] == 1.0
     assert record["reward"] == 0.8
     assert "data:image" not in scorer.response_log_path.read_text()
+
+
+def test_score_logs_sampled_judge_images_and_latency(tmp_path):
+    responses = _FakeResponses('{"evaluation":{"label":"1"}}')
+    scorer = _make_scorer(responses)
+    scorer.response_log_path = tmp_path / "responses.jsonl"
+    scorer.visual_log_dir = tmp_path / "vlm_visuals"
+    scorer.visual_log_every = 1
+
+    scorer.score(
+        Image.new("RGB", (80, 60), color="white"),
+        Image.new("RGB", (40, 30), color="black"),
+        "",
+        "A headline",
+        log_context={"sample_id": "sample-1"},
+    )
+
+    record = __import__("json").loads(scorer.response_log_path.read_text())
+    assert record["attempt"] == 1
+    assert record["request_latency_ms"] >= 0.0
+    assert record["latency_ms"] >= record["request_latency_ms"]
+    assert record["visual_artifacts"]["original"].startswith("vlm_visuals/sample-1_")
+    assert record["visual_artifacts"]["candidate"].startswith("vlm_visuals/sample-1_")
+    assert record["visual_artifacts"]["original"].endswith("_original.jpg")
+    assert record["visual_artifacts"]["candidate"].endswith("_candidate.jpg")
+    assert (tmp_path / record["visual_artifacts"]["original"]).is_file()
+    assert (tmp_path / record["visual_artifacts"]["candidate"]).is_file()
