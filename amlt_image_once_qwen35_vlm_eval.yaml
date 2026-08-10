@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
-description: Frozen Qwen3.5-9B four-ratio crop evaluation with GPT visual judge
+description: Frozen Qwen3.5-9B four-ratio crop evaluation on CUDA-13-validated Feeds A100s
 
 target:
   service: manifold
-  name: Recall
+  name: Feeds
   workspace_name: CS-NewsAndFeeds-Singularity
 
 storage:
@@ -40,7 +40,7 @@ jobs:
       set -euo pipefail
       DATA_PATH=/mnt/blob_output/v-yukunban/crop-image-dataset/image_once_test.parquet
       MODEL_PATH=/mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B
-      RUN_ID=qwen35-image-once-four-ratios-vlm-20260810-v1
+      RUN_ID=qwen35-image-once-four-ratios-vlm-20260810-v2
       OUTPUT_DIR=/mnt/blob_output/v-yukunban/crop-image-dataset/results/$$RUN_ID
       test -f "$$DATA_PATH"
       test -d "$$MODEL_PATH"
@@ -58,6 +58,7 @@ jobs:
       .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_image_once_vlm.py \
         --model "$$MODEL_PATH" \
         --data "$$DATA_PATH" \
+        --policy-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v0_original.txt \
         --vlm-prompt-path projects/news_image_crop_benchmark/config/crop_vlm_prompt.txt \
         --output-dir "$$OUTPUT_DIR" \
         --max-attempts 10 \

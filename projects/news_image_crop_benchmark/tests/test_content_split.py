@@ -20,6 +20,11 @@ class ContentSplitTests(unittest.TestCase):
             Image.new("RGB", (16, 8), color="red").save(payload_buffer, format="WEBP")
             payload = payload_buffer.getvalue()
             source_path = root / "source.parquet"
+            policy_prompt_path = root / "policy_prompt.txt"
+            policy_prompt_path.write_text(
+                "<image>\nHeadline: {title}\nRatio: {target_ratio}",
+                encoding="utf-8",
+            )
             pq.write_table(
                 pa.Table.from_pylist(
                     [
@@ -53,6 +58,7 @@ class ContentSplitTests(unittest.TestCase):
                 batch_size=2,
                 seed=42,
                 limit=None,
+                policy_prompt_path=policy_prompt_path,
             )
 
             self.assertEqual(report["unique_original_assets"], 2)
@@ -61,6 +67,12 @@ class ContentSplitTests(unittest.TestCase):
             self.assertEqual(report["duplicate_title_image_pairs"], 1)
             self.assertEqual(report["expanded_rows"], 8)
             self.assertEqual(sum(count > 0 for count in report["split_rows"].values()), 1)
+            self.assertEqual(report["policy_prompt_path"], str(policy_prompt_path.resolve()))
+            self.assertEqual(len(report["policy_prompt_sha256"]), 64)
+            output_path = next(Path(path) for path in report["outputs"].values() if pq.read_table(path).num_rows)
+            prompt = pq.read_table(output_path).to_pylist()[0]["prompt"][0]["content"]
+            self.assertIn("Headline: Shared title", prompt)
+            self.assertIn("Ratio: 1", prompt)
             asset_files = list((root / "output" / "content_assets" / "original").rglob("*.webp"))
             self.assertEqual(len(asset_files), 1)
 

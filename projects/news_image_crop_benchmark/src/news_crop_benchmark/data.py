@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,16 @@ DATA_SOURCE = "news_image_crop"
 ABILITY = "news_image_cropping"
 SPLIT_NAMES = ("train", "validation", "test")
 DEFAULT_SPLIT_FRACTIONS = (0.8, 0.1, 0.1)
+DEFAULT_POLICY_PROMPT_TEMPLATE = """<image>
+News title: {title}
+Target aspect ratio (width / height): {target_ratio}
+Select the crop that best illustrates the news title.
+Return exactly one line: <crop>{"cx": CX, "cy": CY, "area": AREA}</crop>
+CX is the horizontal crop-center coordinate: 0 is the left edge and 1000 is the right edge.
+CY is the vertical crop-center coordinate: 0 is the top edge and 1000 is the bottom edge.
+AREA is the crop area as thousandths of the original image area: 1 is 0.1% and 1000 is the full image.
+Use integers only. Do not include explanations or any other text."""
+_POLICY_PROMPT_VARIABLE_PATTERN = re.compile(r"\{(title|target_ratio)\}")
 
 
 def stable_id(namespace: str, *parts: str) -> str:
@@ -59,21 +70,39 @@ def assign_group_split(
     return SPLIT_NAMES[-1]
 
 
-def build_prompt(title: str, target_ratio: float) -> str:
+def load_policy_prompt_template(path: str | Path | None = None) -> str:
+    if path is None:
+        return DEFAULT_POLICY_PROMPT_TEMPLATE
+    template = Path(path).read_text(encoding="utf-8").strip()
+    validate_policy_prompt_template(template)
+    return template
+
+
+def validate_policy_prompt_template(template: str) -> None:
+    if not template:
+        raise ValueError("policy prompt template must be non-empty")
+    if not template.startswith("<image>\n"):
+        raise ValueError("policy prompt template must start with '<image>' on its own line")
+    for variable in ("title", "target_ratio"):
+        if f"{{{variable}}}" not in template:
+            raise ValueError(f"policy prompt template must contain '{{{variable}}}'")
+
+
+def build_prompt(
+    title: str,
+    target_ratio: float,
+    policy_prompt_template: str | None = None,
+) -> str:
     clean_title = title.strip()
     if not clean_title:
         raise ValueError("title must be non-empty")
     _validate_target_ratio(target_ratio)
-    return (
-        "<image>\n"
-        f"News title: {clean_title}\n"
-        f"Target aspect ratio (width / height): {target_ratio:g}\n"
-        "Select the crop that best illustrates the news title.\n"
-        'Return exactly one line: <crop>{"cx": CX, "cy": CY, "area": AREA}</crop>\n'
-        "CX is the horizontal crop-center coordinate: 0 is the left edge and 1000 is the right edge.\n"
-        "CY is the vertical crop-center coordinate: 0 is the top edge and 1000 is the bottom edge.\n"
-        "AREA is the crop area as thousandths of the original image area: 1 is 0.1% and 1000 is the full image.\n"
-        "Use integers only. Do not include explanations or any other text."
+    template = DEFAULT_POLICY_PROMPT_TEMPLATE if policy_prompt_template is None else policy_prompt_template
+    validate_policy_prompt_template(template)
+    values = {"title": clean_title, "target_ratio": f"{target_ratio:g}"}
+    return _POLICY_PROMPT_VARIABLE_PATTERN.sub(
+        lambda match: values[match.group(1)],
+        template,
     )
 
 
@@ -87,6 +116,7 @@ def build_verl_row(
     image_width: int,
     image_height: int,
     target_ratio: float,
+    policy_prompt_template: str | None = None,
 ) -> dict[str, Any]:
     if not sample_identifier:
         raise ValueError("sample_identifier must be non-empty")
@@ -111,7 +141,12 @@ def build_verl_row(
     )
     return {
         "data_source": DATA_SOURCE,
-        "prompt": [{"role": "user", "content": build_prompt(title, target_ratio)}],
+        "prompt": [
+            {
+                "role": "user",
+                "content": build_prompt(title, target_ratio, policy_prompt_template),
+            }
+        ],
         "images": [original_image_path],
         "ability": ABILITY,
         "reward_model": {"style": "proxy", "ground_truth": ground_truth},

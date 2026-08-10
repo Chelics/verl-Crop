@@ -66,11 +66,20 @@ def test_raw_row_expands_to_four_ratio_tasks_without_using_reference_crop(tmp_pa
         data_path,
     )
 
-    tasks, manifest = module.load_and_materialize_tasks(data_path, tmp_path / "output")
+    policy_prompt_template = (
+        "<image>\nHeadline: {title}\nRatio: {target_ratio}\n"
+        'Return <crop>{"cx": CX, "cy": CY, "area": AREA}</crop>.'
+    )
+    tasks, manifest = module.load_and_materialize_tasks(
+        data_path,
+        tmp_path / "output",
+        policy_prompt_template=policy_prompt_template,
+    )
 
     assert len(manifest) == 1
     assert [task["target_ratio"] for task in tasks] == list(module.TARGET_RATIOS)
     assert all(task["title"] == "A news title" for task in tasks)
+    assert tasks[0]["prompt"].startswith("<image>\nHeadline: A news title\nRatio: 1")
     assert all("must not be used" not in json.dumps(task) for task in tasks)
     assert all(Path(task["image_path"]).is_file() for task in tasks)
 

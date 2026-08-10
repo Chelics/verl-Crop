@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
+# ^ Update with: amlt schema add <file>  |  VS Code: Run Task > amlt
+# Amulet config file. Docs: https://amulet-docs.azurewebsites.net/config_file.html
+# Fill in all <placeholder> values before submitting.
+description: Probe Feeds A100 driver compatibility with vLLM 0.24.0 and PyTorch CUDA 13
+
+target:
+  service: manifold  # run "amlt target list manifold" to see available targets
+  name: Feeds
+  workspace_name: CS-NewsAndFeeds-Singularity
+
+# REQUIRED: Docker environment
+# Manifold jobs authenticate to Azure (storage, ACR) via a User-Assigned
+# Managed Identity, auto-detected from the workspace in most cases. Only set
+# _AZUREML_SINGULARITY_JOB_UAI in 'env' below if auto-detection is ambiguous
+# (multiple non-primary identities); run 'amlt run' to see the available list.
+environment:
+  image: amlt-sing/acpt-torch2.8.x-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - python -m pip install uv
+    - uv python install 3.12
+    - uv venv --seed --python 3.12 .venv-qwen35
+    - uv pip install --python .venv-qwen35/bin/python "vllm==0.24.0"
+
+# REQUIRED: code to run. Set local_dir to your code directory � it must
+# exist and be non-empty. $CONFIG_DIR = directory of this file; the default
+# $CONFIG_DIR/src means: put your code in a 'src' folder next to this file.
+code:
+  local_dir: $CONFIG_DIR
+
+# REQUIRED: Jobs to run. SKU examples: C1 (1 CPU), G1 (1 GPU), G4 (4 GPUs), G8-V100 (8 V100s)
+# Commands run from the uploaded code directory (code.local_dir).
+# 'command' is a shell script block (|): one line per step, e.g. python train.py --lr 0.01
+# Write outputs to $AMLT_OUTPUT_DIR for retrieval with 'amlt results'.
+# Use $$VAR to pass env vars literally ($VAR is interpolated at submission time).
+jobs:
+  - name: cuda13-a100-probe
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: /subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895/resourceGroups/AMLStudio/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml
+    command: |
+      set -euo pipefail
+      nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+      .venv-qwen35/bin/python - <<'PY' | tee "$$AMLT_OUTPUT_DIR/cuda_probe.txt"
+      import json
+      import torch
+      import transformers
+      import vllm
+
+      torch.cuda.init()
+      tensor = torch.arange(4, device="cuda")
+      result = {
+          "torch": torch.__version__,
+          "torch_cuda": torch.version.cuda,
+          "transformers": transformers.__version__,
+          "vllm": vllm.__version__,
+          "cuda_available": torch.cuda.is_available(),
+          "gpu": torch.cuda.get_device_name(0),
+          "tensor_sum": tensor.sum().item(),
+      }
+      print(json.dumps(result, sort_keys=True))
+      assert result["cuda_available"]
+      assert result["tensor_sum"] == 6
+      PY
+

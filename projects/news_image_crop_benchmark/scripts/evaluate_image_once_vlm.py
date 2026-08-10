@@ -22,7 +22,7 @@ import pyarrow.parquet as pq
 import yaml
 from PIL import Image, ImageOps
 
-from news_crop_benchmark.data import build_prompt
+from news_crop_benchmark.data import build_prompt, load_policy_prompt_template
 from news_crop_benchmark.geometry import TARGET_RATIOS, CropAction, action_to_bbox
 from news_crop_benchmark.protocol import parse_crop_action_with_format
 from news_crop_benchmark.proxy_scorer import crop_image
@@ -105,6 +105,7 @@ def load_and_materialize_tasks(
     data_path: Path,
     output_dir: Path,
     target_ratios: Sequence[float] = TARGET_RATIOS,
+    policy_prompt_template: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     parquet = pq.ParquetFile(data_path)
     available_columns = set(parquet.schema_arrow.names)
@@ -174,7 +175,7 @@ def load_and_materialize_tasks(
                     "image_width": image_width,
                     "image_height": image_height,
                     "image_path": str(source_path),
-                    "prompt": build_prompt(title, float(target_ratio)),
+                    "prompt": build_prompt(title, float(target_ratio), policy_prompt_template),
                     "original_render_path": preview_path.relative_to(output_dir).as_posix(),
                 }
             )
@@ -772,6 +773,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--data", type=Path, required=True)
+    parser.add_argument("--policy-prompt-path", type=Path)
     parser.add_argument("--vlm-prompt-path", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-attempts", type=int, default=10)
@@ -806,15 +808,23 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    for path in (args.model, args.data, args.vlm_prompt_path):
+    required_paths = (args.model, args.data, args.vlm_prompt_path)
+    for path in required_paths:
         if not path.exists():
             raise FileNotFoundError(path)
+    if args.policy_prompt_path is not None and not args.policy_prompt_path.is_file():
+        raise FileNotFoundError(args.policy_prompt_path)
     args.output_dir = args.output_dir.resolve()
+    policy_prompt_template = load_policy_prompt_template(args.policy_prompt_path)
     config = {
         "run_id": args.run_id,
         "model": str(args.model.resolve()),
         "data": str(args.data.resolve()),
         "data_sha256": sha256_file(args.data),
+        "policy_prompt_path": (
+            str(args.policy_prompt_path.resolve()) if args.policy_prompt_path is not None else None
+        ),
+        "policy_prompt_sha256": hashlib.sha256(policy_prompt_template.encode("utf-8")).hexdigest(),
         "vlm_prompt_path": str(args.vlm_prompt_path.resolve()),
         "vlm_prompt_sha256": sha256_file(args.vlm_prompt_path),
         "target_ratios": list(TARGET_RATIOS),
@@ -834,7 +844,11 @@ def main() -> None:
         "judge_workers": args.judge_workers,
     }
     prepare_output_directory(args.output_dir, config, args.resume)
-    tasks, manifest = load_and_materialize_tasks(args.data, args.output_dir)
+    tasks, manifest = load_and_materialize_tasks(
+        args.data,
+        args.output_dir,
+        policy_prompt_template=policy_prompt_template,
+    )
     (args.output_dir / "source_manifest.jsonl").write_text(
         "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in manifest),
         encoding="utf-8",

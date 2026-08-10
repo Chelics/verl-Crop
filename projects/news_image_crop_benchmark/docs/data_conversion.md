@@ -107,6 +107,7 @@
 - 输出训练数据中不包含 `CroppedImageUrl` 或 `Reason`。
 - 小规模输出 Parquet 可以通过 Hugging Face Datasets 和 `RLHFDataset` 完成读写往返。
 - 转换报告包含源数据行数、唯一可信组合数、展开后行数、各 split 数量和所有拒绝原因。
+- 转换报告记录策略 Prompt 文件路径和有效模板的 SHA-256。
 
 当前修复后的全量产物位于 `/mnt/blob_output/v-yukunban/news_image_crop_content_split/`。内容组数量为 train 2,143、validation 236、test 267，三者的 SHA-256 交集均为 0。
 

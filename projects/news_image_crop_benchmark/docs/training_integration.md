@@ -14,7 +14,7 @@
 
 ## 当前 Prompt
 
-训练数据和原始模型 baseline 使用同一个 Prompt：
+默认模板位于 `config/policy_prompts/v0_original.txt`。训练数据和原始模型 baseline 使用同一个 Prompt：
 
 ```text
 <image>
@@ -29,6 +29,8 @@ Use integers only. Do not include explanations or any other text.
 ```
 
 模型不直接预测四个 bbox 边界，而是预测归一化中心 `(cx, cy)` 和面积 `area`。程序根据目标比例确定性地计算 bbox，因此生成结果天然满足比例约束。Prompt 使用英文是因为模型和新闻标题以英文为主，同时保持训练与线上推理模板一致。
+
+Prompt 模板通过 `--policy-prompt-path` 传给数据转换器和 image-once evaluator。已有 verl Parquet 中的 Prompt 已经固化；切换模板时必须使用 `scripts/rewrite_prompts.py --output-dir ...` 生成独立版本，并将 `TRAIN_FILE` 和 `TEST_FILE` 指向该版本。策略 Prompt 与 `config/crop_vlm_prompt.txt` 的 VLM Reward/裁判 rubric 是两个独立配置，做策略 Prompt 消融时不得同时修改后者。
 
 ## 训练前顺序
 

@@ -19,6 +19,7 @@ from news_crop_benchmark.data import (
     SPLIT_NAMES,
     assign_group_split,
     build_verl_row,
+    load_policy_prompt_template,
     training_sample_id,
 )
 from news_crop_benchmark.geometry import TARGET_RATIOS
@@ -144,12 +145,14 @@ def convert_dataset(
     batch_size: int,
     seed: int,
     limit: int | None,
+    policy_prompt_path: Path | None = None,
 ) -> dict[str, Any]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
     if limit is not None and limit <= 0:
         raise ValueError("limit must be positive")
 
+    policy_prompt_template = load_policy_prompt_template(policy_prompt_path)
     output_dir = output_dir.resolve()
     asset_root = output_dir / f"{prefix}_assets" / "original"
     parquet_file = pq.ParquetFile(source_path)
@@ -243,6 +246,7 @@ def convert_dataset(
                 image_width=asset["width"],
                 image_height=asset["height"],
                 target_ratio=target_ratio,
+                policy_prompt_template=policy_prompt_template,
             )
             rows_by_split[split].append(row)
             ratio_counts[f"{target_ratio:g}"] += 1
@@ -273,6 +277,8 @@ def convert_dataset(
         "prefix": prefix,
         "seed": seed,
         "limit": limit,
+        "policy_prompt_path": str(policy_prompt_path.resolve()) if policy_prompt_path else None,
+        "policy_prompt_sha256": hashlib.sha256(policy_prompt_template.encode("utf-8")).hexdigest(),
         "source_rows": source_rows,
         "unique_original_assets": len(manifest_rows),
         "unique_original_image_contents": len(assets_by_checksum),
@@ -305,6 +311,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--policy-prompt-path", type=Path)
     args = parser.parse_args()
 
     report = convert_dataset(
@@ -314,6 +321,7 @@ def main() -> None:
         batch_size=args.batch_size,
         seed=args.seed,
         limit=args.limit,
+        policy_prompt_path=args.policy_prompt_path,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
 

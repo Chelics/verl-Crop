@@ -100,10 +100,33 @@ PYTHONPATH=projects/news_image_crop_benchmark/src \
   python projects/news_image_crop_benchmark/scripts/convert_to_verl.py \
   --input /mnt/blob_output/v-yukunban/imageCroppingDataset_cropped_binary.parquet \
   --output-dir "$tmpdir" \
+  --policy-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v0_original.txt \
   --limit 100
 ```
 
 The full conversion writes `news_image_crop_train.parquet`, `news_image_crop_validation.parquet`, `news_image_crop_test.parquet`, and deduplicated original-image assets to the selected output directory.
+
+## Versioned Policy Prompts
+
+Policy prompts live under `config/policy_prompts/`. Each template must start with `<image>` on its
+own line and contain both `{title}` and `{target_ratio}`. JSON braces in the output contract are
+written normally; they do not need escaping. Copy `v0_original.txt` to a new version instead of
+editing it in place.
+
+To apply a new template to existing verl Parquets without mutating the originals:
+
+```bash
+PYTHONPATH=projects/news_image_crop_benchmark/src \
+  python projects/news_image_crop_benchmark/scripts/rewrite_prompts.py \
+  --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_train.parquet \
+  --data /mnt/blob_output/v-yukunban/news_image_crop_content_split/news_image_crop_validation.parquet \
+  --output-dir /mnt/blob_output/v-yukunban/news_image_crop_prompt_v1 \
+  --policy-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v1.txt
+```
+
+The conversion and rewrite reports include the effective policy prompt SHA-256. Point
+`TRAIN_FILE` and `TEST_FILE` at the versioned outputs when launching GRPO; changing a template file
+does not alter prompts already stored in Parquet.
 
 ## Image-Once Zero-Shot Evaluation
 
@@ -116,6 +139,11 @@ The evaluator keeps one valid Qwen candidate per image-ratio task. An invalid re
 again with a different deterministic seed, up to ten total attempts. Every response and parse error
 is persisted. Valid crops are rendered and scored by the GPT visual judge using the source image,
 the Qwen crop, the caption, and the headline.
+
+Select the Qwen policy prompt with `--policy-prompt-path`. The evaluator stores its path and
+effective SHA-256 in `run_config.yaml`, so `--resume` rejects results produced with another
+template. `--vlm-prompt-path` remains the independent GPT judge rubric and should stay fixed during
+policy prompt comparisons.
 
 The AMLT config is `amlt_image_once_qwen35_vlm_eval.yaml` at the repository root. It expects:
 

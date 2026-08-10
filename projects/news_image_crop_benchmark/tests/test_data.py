@@ -1,7 +1,13 @@
 import json
 import unittest
 
-from news_crop_benchmark.data import assign_group_split, build_verl_row, sample_id, training_sample_id
+from news_crop_benchmark.data import (
+    assign_group_split,
+    build_prompt,
+    build_verl_row,
+    sample_id,
+    training_sample_id,
+)
 
 
 class DatasetConstructionTests(unittest.TestCase):
@@ -49,6 +55,27 @@ class DatasetConstructionTests(unittest.TestCase):
         self.assertNotIn("known_bad_crop_path", row["extra_info"])
         self.assertNotIn("reason", row["extra_info"])
         self.assertEqual(json.loads(row["reward_model"]["ground_truth"])["target_ratio"], 1.59)
+
+    def test_build_prompt_renders_parameterized_template_without_treating_json_as_variables(self):
+        template = (
+            "<image>\n"
+            "Headline: {title}\n"
+            "Ratio: {target_ratio}\n"
+            'Return <crop>{"cx": CX, "cy": CY, "area": AREA}</crop>.'
+        )
+
+        prompt = build_prompt("A {target_ratio} headline", 1.91, template)
+
+        self.assertIn("Headline: A {target_ratio} headline", prompt)
+        self.assertIn("Ratio: 1.91", prompt)
+        self.assertIn('{"cx": CX, "cy": CY, "area": AREA}', prompt)
+
+    def test_build_prompt_rejects_template_without_required_variables(self):
+        with self.assertRaisesRegex(ValueError, "target_ratio"):
+            build_prompt("A title", 1.0, "<image>\n{title}")
+
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            build_prompt("A title", 1.0, "")
 
     def test_rejects_relative_image_path(self):
         with self.assertRaises(ValueError):
