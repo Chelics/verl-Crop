@@ -103,6 +103,26 @@ def test_score_returns_configured_fallback_after_request_failure():
     assert label == 5.0
 
 
+def test_score_detailed_distinguishes_parse_fallback_and_request_failure():
+    parse_result = _make_scorer(_FakeResponses("no label")).score_detailed(
+        Image.new("RGB", (80, 60), color="white"),
+        Image.new("RGB", (40, 30), color="black"),
+        "",
+        "A headline",
+    )
+    failed_result = _make_scorer(_FakeResponses(error=RuntimeError("service unavailable"))).score_detailed(
+        Image.new("RGB", (80, 60), color="white"),
+        Image.new("RGB", (40, 30), color="black"),
+        "",
+        "A headline",
+    )
+
+    assert parse_result.status == "parse_fallback"
+    assert parse_result.label == 2.5
+    assert failed_result.status == "failed"
+    assert failed_result.error_type == "RuntimeError"
+
+
 def test_score_logs_complete_response_without_image_payloads(tmp_path):
     output_text = '{"evaluation":{"label":"1","visual_reasoning":"Complete explanation"}}'
     scorer = _make_scorer(_FakeResponses(output_text))

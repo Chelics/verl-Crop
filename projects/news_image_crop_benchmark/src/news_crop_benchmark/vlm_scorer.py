@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from collections.abc import Callable
 from functools import lru_cache
@@ -18,6 +19,18 @@ DEFAULT_AZURE_API_VERSION = "2025-04-01-preview"
 DEFAULT_AZURE_ENDPOINT = "https://csnf-singularity-aoai-eastus2.openai.azure.com/"
 DEFAULT_AZURE_DEPLOYMENT = "gpt-5.6-sol"
 DEFAULT_MANAGED_IDENTITY_CLIENT_ID = "e6162a0d-e540-4454-995f-30bcb97f35b4"
+
+
+@dataclass(frozen=True)
+class VLMScoreResult:
+    reward: float
+    label: float
+    status: str
+    output_text: str | None
+    response_id: str | None
+    attempt_count: int
+    latency_ms: float
+    error_type: str | None = None
 
 
 def load_env_files() -> None:
@@ -66,21 +79,25 @@ def extract_response_text(response: Any) -> str:
     return "".join(chunks)
 
 
-def parse_label(text: str, fallback_label: float = 2.5) -> float:
+def _parse_label_with_status(text: str, fallback_label: float = 2.5) -> tuple[float, bool]:
     try:
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if match:
             payload = json.loads(match.group(0))
             label = payload.get("evaluation", {}).get("label")
             if label is not None:
-                return max(0.0, min(5.0, float(label)))
+                return max(0.0, min(5.0, float(label))), True
     except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
         pass
 
     fallback = re.search(r'"label"\s*:\s*"?([0-5])"?', text)
     if fallback:
-        return float(fallback.group(1))
-    return max(0.0, min(5.0, fallback_label))
+        return float(fallback.group(1)), True
+    return max(0.0, min(5.0, fallback_label)), False
+
+
+def parse_label(text: str, fallback_label: float = 2.5) -> float:
+    return _parse_label_with_status(text, fallback_label)[0]
 
 
 def _parse_rgb(value: str, default: tuple[int, int, int] = (255, 255, 255)) -> tuple[int, int, int]:
@@ -260,6 +277,17 @@ class CropVLMScorer:
         headline: str,
         log_context: dict[str, Any] | None = None,
     ) -> tuple[float, float]:
+        result = self.score_detailed(original, candidate, caption, headline, log_context)
+        return result.reward, result.label
+
+    def score_detailed(
+        self,
+        original: Image.Image,
+        candidate: Image.Image,
+        caption: str,
+        headline: str,
+        log_context: dict[str, Any] | None = None,
+    ) -> VLMScoreResult:
         original_prepared = self._prepare_image(original)
         candidate_prepared = self._prepare_image(candidate)
         visual_artifacts = self._save_visual_artifacts(original_prepared, candidate_prepared, log_context)
@@ -301,19 +329,22 @@ class CropVLMScorer:
                     response = stream.get_final_response()
                 request_latency_ms = (time.perf_counter() - request_started) * 1000
                 output_text = extract_response_text(response)
-                label = parse_label(output_text, self.parse_fallback_label)
+                label, parsed = _parse_label_with_status(output_text, self.parse_fallback_label)
                 reward = (5.0 - label) / 5.0
+                status = "completed" if parsed else "parse_fallback"
+                response_id = getattr(response, "id", None)
+                latency_ms = (time.perf_counter() - score_started) * 1000
                 if self.response_log_path is not None:
                     _append_jsonl(
                         self.response_log_path,
                         {
                             "timestamp": datetime.now(UTC).isoformat(),
-                            "status": "completed",
+                            "status": status,
                             "model": self.model,
-                            "response_id": getattr(response, "id", None),
+                            "response_id": response_id,
                             "attempt": attempt + 1,
                             "request_latency_ms": round(request_latency_ms, 2),
-                            "latency_ms": round((time.perf_counter() - score_started) * 1000, 2),
+                            "latency_ms": round(latency_ms, 2),
                             "headline": headline,
                             "context": log_context or {},
                             "label": label,
@@ -322,7 +353,15 @@ class CropVLMScorer:
                             "visual_artifacts": visual_artifacts,
                         },
                     )
-                return reward, label
+                return VLMScoreResult(
+                    reward=reward,
+                    label=label,
+                    status=status,
+                    output_text=output_text,
+                    response_id=response_id,
+                    attempt_count=attempt + 1,
+                    latency_ms=latency_ms,
+                )
             except Exception as error:  # noqa: BLE001 - SDK and credential failures share the same fallback.
                 last_error = error
                 if attempt < self.max_retries:
@@ -334,6 +373,8 @@ class CropVLMScorer:
         )
         label = max(0.0, min(5.0, self.fallback_label))
         reward = (5.0 - label) / 5.0
+        latency_ms = (time.perf_counter() - score_started) * 1000
+        error_type = type(last_error).__name__
         if self.response_log_path is not None:
             _append_jsonl(
                 self.response_log_path,
@@ -343,15 +384,24 @@ class CropVLMScorer:
                     "model": self.model,
                     "headline": headline,
                     "attempts": self.max_retries + 1,
-                    "latency_ms": round((time.perf_counter() - score_started) * 1000, 2),
+                    "latency_ms": round(latency_ms, 2),
                     "context": log_context or {},
                     "label": label,
                     "reward": reward,
-                    "error_type": type(last_error).__name__,
+                    "error_type": error_type,
                     "visual_artifacts": visual_artifacts,
                 },
             )
-        return reward, label
+        return VLMScoreResult(
+            reward=reward,
+            label=label,
+            status="failed",
+            output_text=None,
+            response_id=None,
+            attempt_count=self.max_retries + 1,
+            latency_ms=latency_ms,
+            error_type=error_type,
+        )
 
 
 @lru_cache(maxsize=8)

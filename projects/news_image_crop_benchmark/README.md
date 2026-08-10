@@ -105,4 +105,43 @@ PYTHONPATH=projects/news_image_crop_benchmark/src \
 
 The full conversion writes `news_image_crop_train.parquet`, `news_image_crop_validation.parquet`, `news_image_crop_test.parquet`, and deduplicated original-image assets to the selected output directory.
 
+## Image-Once Zero-Shot Evaluation
+
+`scripts/evaluate_image_once_vlm.py` evaluates the frozen Qwen3.5-9B model directly on the raw
+`image_once_test.parquet` schema. It reads only `image_id`, `original_image`, `title`, and
+`ImageCaption`; reference crops and source reasons are not used.
+
+Each source image is expanded into the four target ratios `1.0`, `1.91`, `1.77`, and `1.59`.
+The evaluator keeps one valid Qwen candidate per image-ratio task. An invalid response is sampled
+again with a different deterministic seed, up to ten total attempts. Every response and parse error
+is persisted. Valid crops are rendered and scored by the GPT visual judge using the source image,
+the Qwen crop, the caption, and the headline.
+
+The AMLT config is `amlt_image_once_qwen35_vlm_eval.yaml` at the repository root. It expects:
+
+```text
+/mnt/blob_output/v-yukunban/crop-image-dataset/image_once_test.parquet
+```
+
+and writes the complete run under:
+
+```text
+/mnt/blob_output/v-yukunban/crop-image-dataset/results/<run-id>/
+```
+
+Outputs include source and candidate renders, all generation attempts, raw judge responses,
+JSONL/Parquet details, JSON/CSV summaries, and an HTML report. Parse the AMLT config without
+submitting a job:
+
+```bash
+amlt run amlt_image_once_qwen35_vlm_eval.yaml --dump
+```
+
+Submit the evaluation with an explicit experiment name:
+
+```bash
+amlt run amlt_image_once_qwen35_vlm_eval.yaml qwen35-image-once-vlm-20260810 \
+  --description "Frozen Qwen3.5-9B four-ratio crops scored by the GPT visual judge"
+```
+
 See `docs/environment.md` before installing the training stack. Formal quality claims require the small human golden set described in `docs/experiment_plan.md`.
