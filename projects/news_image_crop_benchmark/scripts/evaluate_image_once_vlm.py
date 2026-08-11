@@ -5,6 +5,7 @@ import argparse
 import csv
 import hashlib
 import html
+import importlib.metadata
 import json
 import multiprocessing
 import os
@@ -24,13 +25,24 @@ from PIL import Image, ImageOps
 
 from news_crop_benchmark.data import build_prompt, load_policy_prompt_template
 from news_crop_benchmark.geometry import TARGET_RATIOS, CropAction, action_to_bbox
-from news_crop_benchmark.protocol import parse_crop_action_with_format
+from news_crop_benchmark.policy_model_adapter import (
+    MODEL_FAMILIES,
+    PolicyModelAdapter,
+)
+from news_crop_benchmark.protocol import parse_crop_action_with_format, parse_percent_crop_action
 from news_crop_benchmark.proxy_scorer import crop_image
 from news_crop_benchmark.vlm_scorer import CropVLMScorer
 
 SOURCE_COLUMNS = ("image_id", "original_image", "title", "ImageCaption")
 FINAL_GENERATION_STATUSES = {"valid", "retry_exhausted"}
 COUNTED_JUDGE_STATUS = "completed"
+
+
+def package_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
 
 
 def sha256_file(path: Path) -> str:
@@ -106,6 +118,7 @@ def load_and_materialize_tasks(
     output_dir: Path,
     target_ratios: Sequence[float] = TARGET_RATIOS,
     policy_prompt_template: str | None = None,
+    max_images: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     parquet = pq.ParquetFile(data_path)
     available_columns = set(parquet.schema_arrow.names)
@@ -123,7 +136,10 @@ def load_and_materialize_tasks(
     tasks: list[dict[str, Any]] = []
     manifest: list[dict[str, Any]] = []
     seen_image_ids: set[str] = set()
-    for source_index, row in enumerate(table.to_pylist()):
+    source_rows = table.to_pylist()
+    if max_images is not None:
+        source_rows = source_rows[:max_images]
+    for source_index, row in enumerate(source_rows):
         image_id = str(row["image_id"])
         title = " ".join(str(row["title"]).split())
         caption = " ".join(str(row["ImageCaption"]).split())
@@ -220,29 +236,26 @@ def judge_progress_path(output_dir: Path, current_task_id: str) -> Path:
     return output_dir / "progress" / "judge" / f"{current_task_id}.json"
 
 
-def build_vllm_request(processor: Any, task: dict[str, Any], image: Image.Image, args: argparse.Namespace) -> dict:
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": task["prompt"].replace("<image>\n", "", 1)},
-            ],
-        }
-    ]
-    rendered_prompt = processor.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=False,
-    )
-    return {
-        "prompt": rendered_prompt,
-        "multi_modal_data": {"image": image},
-        "mm_processor_kwargs": {
-            "size": {"longest_edge": args.image_max_pixels, "shortest_edge": args.image_min_pixels}
-        },
-    }
+def build_attempt_prompt(
+    base_prompt: str,
+    previous_attempts: Sequence[dict[str, Any]],
+    action_protocol: str = "legacy-crop-json",
+) -> str:
+    if not previous_attempts:
+        return base_prompt
+    previous = previous_attempts[-1]
+    error = str(previous.get("parse_error") or "output did not satisfy the required crop protocol")
+    if action_protocol == "percent-json-v1":
+        requirements = (
+            "Generate a new answer containing only one JSON object. Recheck that cx_pct and cy_pct "
+            "are integers in [0, 100], area_pct is an integer in [1, 100], and there are no other fields."
+        )
+    else:
+        requirements = (
+            "Generate a new answer. Recheck that cx and cy are normalized integers in [0, 1000], "
+            "area is a normalized integer in [1, 1000], and output contains exactly one complete <crop> line."
+        )
+    return f"{base_prompt}\n\nYour previous output was rejected by the validator: {error}\n{requirements}"
 
 
 def _load_generation_state(
@@ -276,14 +289,14 @@ def run_generation_worker(
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-    from transformers import AutoProcessor
     from vllm import LLM, SamplingParams
 
     active, attempts = _load_generation_state(output_dir, tasks)
     if not active:
         return
 
-    processor = AutoProcessor.from_pretrained(model_path, local_files_only=True)
+    adapter = PolicyModelAdapter.create(args.model_family)
+    renderer = adapter.load_renderer(model_path)
     llm = LLM(
         model=str(model_path),
         tensor_parallel_size=args.tensor_parallel_size,
@@ -293,6 +306,18 @@ def run_generation_worker(
         max_num_seqs=args.max_num_seqs,
         enforce_eager=True,
         limit_mm_per_prompt={"image": 1},
+        **adapter.llm_kwargs(internvl_max_dynamic_patch=args.internvl_max_dynamic_patch),
+    )
+    write_json_atomic(
+        output_dir / "runtime" / f"model_rank_{rank}.json",
+        {
+            "rank": rank,
+            "gpu_devices": gpu_devices,
+            **adapter.runtime_metadata(renderer),
+            "vllm_version": package_version("vllm"),
+            "transformers_version": package_version("transformers"),
+            "sentencepiece_version": package_version("sentencepiece"),
+        },
     )
 
     for attempt_number in range(1, args.max_attempts + 1):
@@ -309,7 +334,19 @@ def run_generation_worker(
                     with Image.open(task["image_path"]) as source:
                         image = ImageOps.exif_transpose(source).convert("RGB")
                     images.append(image)
-                    requests.append(build_vllm_request(processor, task, image, args))
+                    requests.append(
+                        adapter.build_request(
+                            renderer,
+                            build_attempt_prompt(
+                                task["prompt"],
+                                attempts[task["task_id"]],
+                                args.action_protocol,
+                            ),
+                            image,
+                            image_max_pixels=args.image_max_pixels,
+                            image_min_pixels=args.image_min_pixels,
+                        )
+                    )
 
                 attempt_seed = args.seed + attempt_number - 1
                 sampling_params = SamplingParams(
@@ -318,21 +355,33 @@ def run_generation_worker(
                     n=1,
                     max_tokens=args.max_tokens,
                     seed=attempt_seed,
+                    **adapter.sampling_kwargs(renderer),
                 )
                 outputs = llm.generate(requests, sampling_params=sampling_params)
                 for task, request_output in zip(task_batch, outputs, strict=True):
                     current_task_id = task["task_id"]
                     response = request_output.outputs[0].text if request_output.outputs else ""
+                    if args.canonicalize_bare_json:
+                        canonical_response, response_normalized = adapter.canonicalize_response(response)
+                    else:
+                        canonical_response, response_normalized = response, False
                     attempt_record: dict[str, Any] = {
                         "attempt": attempt_number,
                         "seed": attempt_seed,
                         "response": response,
+                        "canonical_response": canonical_response,
+                        "response_normalized": response_normalized,
+                        "action_protocol": args.action_protocol,
                         "valid": False,
                         "strict_format": False,
+                        "canonical_format": False,
                         "parse_error": None,
                     }
                     try:
-                        parse_result = parse_crop_action_with_format(response)
+                        if args.action_protocol == "percent-json-v1":
+                            parse_result = parse_percent_crop_action(response)
+                        else:
+                            parse_result = parse_crop_action_with_format(canonical_response)
                     except ValueError as error:
                         attempt_record["parse_error"] = str(error)
                         attempts[current_task_id].append(attempt_record)
@@ -353,7 +402,8 @@ def run_generation_worker(
 
                     action = parse_result.action
                     attempt_record["valid"] = True
-                    attempt_record["strict_format"] = parse_result.strict_format
+                    attempt_record["strict_format"] = parse_result.strict_format and not response_normalized
+                    attempt_record["canonical_format"] = parse_result.strict_format
                     attempts[current_task_id].append(attempt_record)
                     write_json_atomic(
                         generation_progress_path(output_dir, current_task_id),
@@ -402,7 +452,7 @@ def run_parallel_generation(
                 model_path,
                 args,
             ),
-            name=f"qwen-image-once-rank-{rank}",
+            name=f"policy-model-rank-{rank}",
         )
         process.start()
         processes.append(process)
@@ -419,18 +469,22 @@ def run_parallel_generation(
 def parse_judge_metadata(output_text: str | None) -> dict[str, Any]:
     if not output_text:
         return {"rules": [], "confidence_score": None, "tier_name": None}
-    try:
-        match = re.search(r"\{.*\}", output_text, flags=re.DOTALL)
-        payload = json.loads(match.group(0)) if match else {}
-        evaluation = payload.get("evaluation", {})
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", output_text):
+        try:
+            payload, _ = decoder.raw_decode(output_text[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("evaluation"), dict):
+            continue
+        evaluation = payload["evaluation"]
         rules = evaluation.get("rules", [])
         return {
             "rules": [str(rule) for rule in rules] if isinstance(rules, list) else [],
             "confidence_score": evaluation.get("confidence_score"),
             "tier_name": evaluation.get("tier_name"),
         }
-    except (AttributeError, TypeError, json.JSONDecodeError):
-        return {"rules": [], "confidence_score": None, "tier_name": None}
+    return {"rules": [], "confidence_score": None, "tier_name": None}
 
 
 def render_candidate(task: dict[str, Any], action: dict[str, float], output_dir: Path) -> Path:
@@ -465,7 +519,12 @@ def run_judge(
     def score_task(task: dict[str, Any]) -> None:
         judge_path = judge_progress_path(output_dir, task["task_id"])
         if judge_path.exists():
-            return
+            try:
+                existing = json.loads(judge_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                existing = {}
+            if existing.get("status") in {"completed", "not_run"}:
+                return
         generation = json.loads(
             generation_progress_path(output_dir, task["task_id"]).read_text(encoding="utf-8")
         )
@@ -551,6 +610,14 @@ def build_details(tasks: Sequence[dict[str, Any]], output_dir: Path) -> list[dic
                 "invalid_attempt_count": invalid_attempt_count,
                 "total_attempt_count": len(attempts),
                 "strict_format": valid_attempt["strict_format"] if valid_attempt else False,
+                "canonical_format": (
+                    valid_attempt.get("canonical_format", valid_attempt["strict_format"])
+                    if valid_attempt
+                    else False
+                ),
+                "response_normalized": (
+                    bool(valid_attempt.get("response_normalized", False)) if valid_attempt else False
+                ),
                 "final_response": valid_attempt["response"] if valid_attempt else None,
                 "action_cx": action.get("cx"),
                 "action_cy": action.get("cy"),
@@ -607,6 +674,16 @@ def summarize_subset(details: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "retry_exhausted_count": sum(detail["generation_status"] == "retry_exhausted" for detail in details),
         "strict_format_count": sum(detail["strict_format"] for detail in generated),
         "strict_format_rate": mean(detail["strict_format"] for detail in generated) if generated else 0.0,
+        "canonical_format_count": sum(detail.get("canonical_format", False) for detail in generated),
+        "canonical_format_rate": (
+            mean(detail.get("canonical_format", False) for detail in generated) if generated else 0.0
+        ),
+        "response_normalized_count": sum(
+            detail.get("response_normalized", False) for detail in generated
+        ),
+        "response_normalized_rate": (
+            mean(detail.get("response_normalized", False) for detail in generated) if generated else 0.0
+        ),
         "judge_completed_count": len(counted),
         "judge_parse_fallback_count": sum(detail["judge_status"] == "parse_fallback" for detail in details),
         "judge_failed_count": sum(detail["judge_status"] == "failed" for detail in details),
@@ -692,7 +769,7 @@ def render_html_report(details: list[dict[str, Any]], summary: dict[str, Any], o
         cards = []
         for detail in image_details:
             candidate_html = (
-                f'<img src="{html.escape(detail["candidate_path"])}" alt="Qwen crop">'
+                f'<img src="{html.escape(detail["candidate_path"])}" alt="Policy crop">'
                 if detail["candidate_path"]
                 else '<div class="missing">No valid crop</div>'
             )
@@ -708,7 +785,7 @@ def render_html_report(details: list[dict[str, Any]], summary: dict[str, Any], o
                   <p><strong>Tier:</strong> {html.escape(str(detail['judge_label']))}</p>
                   <p><strong>Rules:</strong> {html.escape(', '.join(detail['judge_rules']))}</p>
                   <details><summary>Responses and scoring data</summary><pre>{html.escape(json.dumps({
-                      'qwen_response': detail['final_response'],
+                      'policy_response': detail['final_response'],
                       'action': {
                           'cx': detail['action_cx'],
                           'cy': detail['action_cy'],
@@ -736,7 +813,7 @@ def render_html_report(details: list[dict[str, Any]], summary: dict[str, Any], o
 
     document = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Qwen3.5-9B Four-Ratio Crop Evaluation</title>
+<title>{html.escape(summary['model_name'])} Four-Ratio Crop Evaluation</title>
 <style>
 :root {{ --ink:#1d2522; --muted:#63706a; --line:#d3dad6; --paper:#f1f4f2; --accent:#006b54; }}
 * {{ box-sizing:border-box; }} body {{ margin:0; color:var(--ink); background:var(--paper); font-family:"Segoe UI",sans-serif; }}
@@ -747,10 +824,203 @@ table {{ border-collapse:collapse; width:min(900px,100%); }} th,td {{ border-bot
 .candidate img {{ height:320px; }} p {{ overflow-wrap:anywhere; }} pre {{ white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }} .missing {{ min-height:180px; display:grid; place-items:center; background:#eee; color:var(--muted); }}
 @media (max-width:900px) {{ .layout {{ grid-template-columns:1fr; }} .candidates {{ grid-template-columns:1fr; }} main {{ width:100%; padding:10px; }} }}
 </style></head><body><main>
-<section class="summary"><h1>Qwen3.5-9B Four-Ratio Crop Evaluation</h1><table>{metric_rows}</table></section>
+<section class="summary"><h1>{html.escape(summary['model_name'])} Four-Ratio Crop Evaluation</h1><table>{metric_rows}</table></section>
 {''.join(sections)}
 </main></body></html>"""
     (output_dir / "report.html").write_text(document, encoding="utf-8")
+
+
+def _format_metric(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    return str(value)
+
+
+def _escape_markdown_text(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _markdown_image(alt: str, path: str | None) -> str:
+    if not path:
+        return "No valid crop"
+    return f"![{alt}]({Path(path).as_posix()})"
+
+
+def render_markdown_report(details: list[dict[str, Any]], summary: dict[str, Any], output_dir: Path) -> None:
+    overall = summary["overall"]
+    lines = [
+        f"# {summary['model_name']} Four-Ratio Crop Evaluation",
+        "",
+        "## Run",
+        "",
+        f"- Run ID: `{summary.get('run_id', 'N/A')}`",
+        f"- Model family: `{summary.get('model_family', 'N/A')}`",
+        f"- Model: `{summary.get('model', 'N/A')}`",
+        f"- Data: `{summary.get('data', 'N/A')}`",
+        f"- Images: {summary.get('images', 'N/A')}",
+        f"- Tasks: {overall['tasks']}",
+        "",
+        "## Overall",
+        "",
+        "| Metric | Value |",
+        "|---|---:|",
+    ]
+    metric_keys = (
+        "generation_success_count",
+        "generation_success_rate",
+        "first_attempt_valid_count",
+        "had_invalid_output_count",
+        "invalid_output_count",
+        "retry_recovered_count",
+        "retry_exhausted_count",
+        "strict_format_rate",
+        "canonical_format_rate",
+        "judge_completed_count",
+        "judge_completed_rate",
+        "judge_failed_count",
+        "judge_parse_fallback_count",
+        "mean_judge_label",
+        "mean_judge_reward",
+        "tier_0_1_acceptable_rate",
+        "tier_3_5_severe_rate",
+        "mean_action_cx",
+        "mean_action_cy",
+        "mean_action_area",
+        "judge_latency_ms_p50",
+        "judge_latency_ms_p95",
+    )
+    lines.extend(f"| `{key}` | {_format_metric(overall.get(key))} |" for key in metric_keys)
+    lines.extend(
+        [
+            "",
+            "## By Ratio",
+            "",
+            "| Ratio | Tasks | Acceptable Tier 0-1 | Severe Tier 3-5 | Mean Label | Mean Reward | Mean Area |",
+            "|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for ratio in TARGET_RATIOS:
+        metrics = summary["by_ratio"][f"{ratio:g}"]
+        lines.append(
+            f"| {ratio:g} | {metrics['tasks']} | {_format_metric(metrics['tier_0_1_acceptable_rate'])} | "
+            f"{_format_metric(metrics['tier_3_5_severe_rate'])} | "
+            f"{_format_metric(metrics['mean_judge_label'])} | "
+            f"{_format_metric(metrics['mean_judge_reward'])} | "
+            f"{_format_metric(metrics['mean_action_area'])} |"
+        )
+
+    lines.extend(["", "## Tier Distribution", "", "| Tier | Count |", "|---:|---:|"])
+    lines.extend(f"| {tier} | {count} |" for tier, count in overall["tier_counts"].items())
+
+    lines.extend(["", "## Most Frequent Judge Rules", "", "| Rule | Count |", "|---|---:|"])
+    rule_counts = sorted(overall["rule_counts"].items(), key=lambda item: (-item[1], item[0]))
+    lines.extend(f"| `{rule}` | {count} |" for rule, count in rule_counts)
+
+    retried = [detail for detail in details if detail["invalid_attempt_count"]]
+    lines.extend(["", "## Generation Retries", ""])
+    if retried:
+        lines.extend(
+            [
+                "| Task | Ratio | Invalid Attempts | Final Tier | Title |",
+                "|---|---:|---:|---:|---|",
+            ]
+        )
+        for detail in retried:
+            title = str(detail["title"]).replace("|", "\\|")
+            lines.append(
+                f"| `{detail['task_id']}` | {detail['target_ratio']:g} | "
+                f"{detail['invalid_attempt_count']} | {_format_metric(detail['judge_label'])} | {title} |"
+            )
+    else:
+        lines.append("No task required a generation retry.")
+
+    severe = sorted(
+        (detail for detail in details if detail["judge_label"] is not None and detail["judge_label"] >= 4),
+        key=lambda detail: (-detail["judge_label"], detail["source_index"], detail["target_ratio"]),
+    )
+    lines.extend(
+        [
+            "",
+            "## Severe Examples",
+            "",
+            "The table lists up to 30 Tier 4-5 tasks. Use the recorded relative render path to retrieve only a sample that needs visual review.",
+            "",
+            "| Task | Tier | Ratio | Rules | Candidate | Title |",
+            "|---|---:|---:|---|---|---|",
+        ]
+    )
+    for detail in severe[:30]:
+        title = str(detail["title"]).replace("|", "\\|")
+        rules = ", ".join(detail["judge_rules"])
+        lines.append(
+            f"| `{detail['task_id']}` | {_format_metric(detail['judge_label'])} | "
+            f"{detail['target_ratio']:g} | {rules} | `{detail['candidate_path']}` | {title} |"
+        )
+
+    by_image: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for detail in details:
+        by_image[detail["image_id"]].append(detail)
+    lines.extend(
+        [
+            "",
+            "## Visual Results",
+            "",
+            "Image links are relative to this report. Open `report.md` with JupyterLab or a remote VS Code Markdown Preview from the result directory so `renders/` is reachable.",
+            "",
+        ]
+    )
+    ordered_images = sorted(by_image.values(), key=lambda group: group[0]["source_index"])
+    for image_details in ordered_images:
+        image_details.sort(key=lambda detail: TARGET_RATIOS.index(detail["target_ratio"]))
+        first = image_details[0]
+        lines.extend(
+            [
+                f"### {_escape_markdown_text(first['title'])}",
+                "",
+                f"`image_id: {first['image_id']}`",
+                "",
+                f"**Original**  ",
+                _markdown_image("Original", first["original_render_path"]),
+                "",
+                "| Ratio | Candidate | Tier | Rules | Action `(cx, cy, area)` | Attempts |",
+                "|---:|---|---:|---|---|---:|",
+            ]
+        )
+        for detail in image_details:
+            rules = _escape_markdown_text(", ".join(detail["judge_rules"]))
+            candidate_alt = f"Ratio {detail['target_ratio']:g}"
+            action = (
+                f"({detail['action_cx']}, {detail['action_cy']}, {detail['action_area']})"
+                if detail["action_cx"] is not None
+                else "N/A"
+            )
+            lines.append(
+                f"| {detail['target_ratio']:g} | "
+                f"{_markdown_image(candidate_alt, detail['candidate_path'])} | "
+                f"{_format_metric(detail['judge_label'])} | {rules} | {action} | "
+                f"{detail['total_attempt_count']} |"
+            )
+        lines.append("")
+
+    lines.extend(
+        [
+            "",
+            "## Artifacts",
+            "",
+            "- `summary.json`: machine-readable aggregate metrics",
+            "- `summary.csv`: aggregate metrics table",
+            "- `details.parquet`: structured task-level results",
+            "- `details.jsonl`: task-level results including judge text",
+            "- `generation_attempts.jsonl`: every policy response and retry",
+            "- `judge_responses.jsonl`: raw judge responses and latency",
+            "- `renders/originals/`: source previews",
+            "- `renders/candidates/`: final policy crops",
+            "",
+        ]
+    )
+    (output_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def write_generation_attempts(tasks: Sequence[dict[str, Any]], output_dir: Path) -> None:
@@ -767,11 +1037,21 @@ def write_generation_attempts(tasks: Sequence[dict[str, Any]], output_dir: Path)
     )
 
 
+def load_runtime_metadata(output_dir: Path) -> list[dict[str, Any]]:
+    runtime_dir = output_dir / "runtime"
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(runtime_dir.glob("model_rank_*.json"))
+    ]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate raw image_once Parquet data with Qwen3.5 crops and the GPT visual judge."
+        description="Evaluate raw image_once Parquet data with a vision-language policy and GPT visual judge."
     )
     parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model-family", choices=MODEL_FAMILIES, required=True)
+    parser.add_argument("--model-name", required=True)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--policy-prompt-path", type=Path)
     parser.add_argument("--vlm-prompt-path", type=Path, required=True)
@@ -784,14 +1064,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--image-max-pixels", type=int, default=1048576)
     parser.add_argument("--image-min-pixels", type=int, default=65536)
+    parser.add_argument("--internvl-max-dynamic-patch", type=int, default=4)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.60)
     parser.add_argument("--data-parallel-size", type=int, default=8)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--prompt-batch-size", type=int, default=16)
     parser.add_argument("--max-num-seqs", type=int, default=16)
     parser.add_argument("--judge-workers", type=int, default=2)
+    parser.add_argument("--max-images", type=int)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--canonicalize-bare-json", action="store_true")
+    parser.add_argument(
+        "--action-protocol",
+        choices=("legacy-crop-json", "percent-json-v1"),
+        default="legacy-crop-json",
+    )
     args = parser.parse_args()
     for name in (
         "max_attempts",
@@ -800,9 +1088,12 @@ def parse_args() -> argparse.Namespace:
         "prompt_batch_size",
         "max_num_seqs",
         "judge_workers",
+        "internvl_max_dynamic_patch",
     ):
         if getattr(args, name) <= 0:
             raise ValueError(f"{name.replace('_', '-')} must be positive")
+    if args.max_images is not None and args.max_images <= 0:
+        raise ValueError("max-images must be positive")
     return args
 
 
@@ -818,7 +1109,24 @@ def main() -> None:
     policy_prompt_template = load_policy_prompt_template(args.policy_prompt_path)
     config = {
         "run_id": args.run_id,
+        "model_name": args.model_name,
+        "model_family": args.model_family,
+        "output_protocol_version": (
+            "percent-json-v1"
+            if args.action_protocol == "percent-json-v1"
+            else (
+                "crop-json-canonicalization-v1"
+                if args.canonicalize_bare_json
+                else "native-crop-protocol-v1"
+            )
+        ),
         "model": str(args.model.resolve()),
+        "model_config_sha256": sha256_file(args.model / "config.json"),
+        "model_index_sha256": (
+            sha256_file(args.model / "model.safetensors.index.json")
+            if (args.model / "model.safetensors.index.json").is_file()
+            else None
+        ),
         "data": str(args.data.resolve()),
         "data_sha256": sha256_file(args.data),
         "policy_prompt_path": (
@@ -836,21 +1144,55 @@ def main() -> None:
         "max_tokens": args.max_tokens,
         "image_max_pixels": args.image_max_pixels,
         "image_min_pixels": args.image_min_pixels,
+        "internvl_max_dynamic_patch": args.internvl_max_dynamic_patch,
         "gpu_memory_utilization": args.gpu_memory_utilization,
         "data_parallel_size": args.data_parallel_size,
         "tensor_parallel_size": args.tensor_parallel_size,
         "prompt_batch_size": args.prompt_batch_size,
         "max_num_seqs": args.max_num_seqs,
         "judge_workers": args.judge_workers,
+        "max_images": args.max_images,
+        "judge_config": {
+            "deployment": os.getenv("CROP_VLM_MODEL", os.getenv("GPT5_AZURE_OPENAI_DEPLOYMENT", "gpt-5.6-sol")),
+            "api_version": os.getenv("GPT5_AZURE_OPENAI_API_VERSION", "2025-04-01-preview"),
+            "timeout": float(os.getenv("CROP_VLM_TIMEOUT", "45")),
+            "max_retries": int(os.getenv("CROP_VLM_MAX_RETRIES", "2")),
+            "fallback_label": float(os.getenv("CROP_VLM_FALLBACK_LABEL", "5.0")),
+            "parse_fallback_label": float(os.getenv("CROP_VLM_PARSE_FALLBACK_LABEL", "2.5")),
+            "image_size": int(os.getenv("CROP_VLM_IMAGE_SIZE", "384")),
+            "image_format": os.getenv("CROP_VLM_IMAGE_FORMAT", "JPEG"),
+            "jpeg_quality": int(os.getenv("CROP_VLM_JPEG_QUALITY", "70")),
+            "reasoning_effort": os.getenv("CROP_VLM_REASONING_EFFORT", "low"),
+            "output_verbosity": os.getenv("CROP_VLM_OUTPUT_VERBOSITY", "low"),
+            "preprocess_mode": os.getenv("CROP_VLM_PREPROCESS_MODE", "letterbox"),
+        },
     }
     prepare_output_directory(args.output_dir, config, args.resume)
     tasks, manifest = load_and_materialize_tasks(
         args.data,
         args.output_dir,
         policy_prompt_template=policy_prompt_template,
+        max_images=args.max_images,
     )
     (args.output_dir / "source_manifest.jsonl").write_text(
         "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in manifest),
+        encoding="utf-8",
+    )
+    (args.output_dir / "task_manifest.jsonl").write_text(
+        "".join(
+            json.dumps(
+                {
+                    "task_id": task["task_id"],
+                    "image_id": task["image_id"],
+                    "target_ratio": task["target_ratio"],
+                    "policy_prompt": task["prompt"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            + "\n"
+            for task in tasks
+        ),
         encoding="utf-8",
     )
 
@@ -859,7 +1201,17 @@ def main() -> None:
     details = build_details(tasks, args.output_dir)
     summary = {
         "run_id": args.run_id,
+        "model_name": args.model_name,
+        "model_family": args.model_family,
         "model": str(args.model.resolve()),
+        "provenance": {
+            "model_config_sha256": config["model_config_sha256"],
+            "model_index_sha256": config["model_index_sha256"],
+            "data_sha256": config["data_sha256"],
+            "policy_prompt_sha256": config["policy_prompt_sha256"],
+            "vlm_prompt_sha256": config["vlm_prompt_sha256"],
+            "runtime_ranks": load_runtime_metadata(args.output_dir),
+        },
         "data": str(args.data.resolve()),
         "images": len(manifest),
         "target_ratios": list(TARGET_RATIOS),
@@ -868,7 +1220,7 @@ def main() -> None:
     }
     write_generation_attempts(tasks, args.output_dir)
     write_result_tables(details, summary, args.output_dir)
-    render_html_report(details, summary, args.output_dir)
+    render_markdown_report(details, summary, args.output_dir)
     write_json_atomic(
         args.output_dir / "_EVAL_COMPLETE.json",
         {

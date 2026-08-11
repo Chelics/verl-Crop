@@ -25,8 +25,8 @@ def _parse_payload(payload_text: str) -> CropAction:
     expected_keys = {"cx", "cy", "area"}
     if not isinstance(payload, dict) or set(payload) != expected_keys:
         raise ValueError(f"crop payload must contain exactly {sorted(expected_keys)}")
-    if any(isinstance(payload[key], bool) or not isinstance(payload[key], int | float) for key in expected_keys):
-        raise ValueError("crop coordinates must be numeric")
+    if any(isinstance(payload[key], bool) or not isinstance(payload[key], int) for key in expected_keys):
+        raise ValueError("crop coordinates must be integers")
 
     action = CropAction(center_x=float(payload["cx"]), center_y=float(payload["cy"]), area=float(payload["area"]))
     action.validate()
@@ -52,3 +52,29 @@ def parse_crop_action_with_format(response: str) -> CropParseResult:
     if recoverable_match is None:
         raise ValueError("response does not contain a recoverable <crop> JSON object")
     return CropParseResult(action=_parse_payload(recoverable_match.group(1)), strict_format=False)
+
+
+def parse_percent_crop_action(response: str) -> CropParseResult:
+    """Parse an exact percentage-based JSON action and convert it to internal units."""
+    try:
+        payload = json.loads(response.strip())
+    except json.JSONDecodeError as error:
+        raise ValueError("response must be exactly one valid JSON object") from error
+
+    expected_keys = {"cx_pct", "cy_pct", "area_pct"}
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise ValueError(f"percentage crop payload must contain exactly {sorted(expected_keys)}")
+    if any(isinstance(payload[key], bool) or not isinstance(payload[key], int) for key in expected_keys):
+        raise ValueError("percentage crop values must be integers")
+    if not 0 <= payload["cx_pct"] <= 100 or not 0 <= payload["cy_pct"] <= 100:
+        raise ValueError("cx_pct and cy_pct must be in [0, 100]")
+    if not 1 <= payload["area_pct"] <= 100:
+        raise ValueError("area_pct must be in [1, 100]")
+
+    action = CropAction(
+        center_x=float(payload["cx_pct"] * 10),
+        center_y=float(payload["cy_pct"] * 10),
+        area=float(payload["area_pct"] * 10),
+    )
+    action.validate()
+    return CropParseResult(action=action, strict_format=True)

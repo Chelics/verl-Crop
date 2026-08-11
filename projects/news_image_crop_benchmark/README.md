@@ -130,12 +130,12 @@ does not alter prompts already stored in Parquet.
 
 ## Image-Once Zero-Shot Evaluation
 
-`scripts/evaluate_image_once_vlm.py` evaluates the frozen Qwen3.5-9B model directly on the raw
+`scripts/evaluate_image_once_vlm.py` evaluates a frozen vision-language policy model directly on the raw
 `image_once_test.parquet` schema. It reads only `image_id`, `original_image`, `title`, and
 `ImageCaption`; reference crops and source reasons are not used.
 
 Each source image is expanded into the four target ratios `1.0`, `1.91`, `1.77`, and `1.59`.
-The evaluator keeps one valid Qwen candidate per image-ratio task. An invalid response is sampled
+The evaluator keeps one valid model candidate per image-ratio task. An invalid response is sampled
 again with a different deterministic seed, up to ten total attempts. Every response and parse error
 is persisted. Valid crops are rendered and scored by the GPT visual judge using the source image,
 the Qwen crop, the caption, and the headline.
@@ -158,8 +158,15 @@ and writes the complete run under:
 ```
 
 Outputs include source and candidate renders, all generation attempts, raw judge responses,
-JSONL/Parquet details, JSON/CSV summaries, and an HTML report. Parse the AMLT config without
-submitting a job:
+JSONL/Parquet details, JSON/CSV summaries, and a Markdown report. Read the report directly without
+downloading image assets:
+
+```bash
+amlt storage cat -c amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output \
+  <result-prefix>/report.md
+```
+
+Parse the AMLT config without submitting a job:
 
 ```bash
 amlt run amlt_image_once_qwen35_vlm_eval.yaml --dump
@@ -171,5 +178,80 @@ Submit the evaluation with an explicit experiment name:
 amlt run amlt_image_once_qwen35_vlm_eval.yaml qwen35-image-once-vlm-20260810 \
   --description "Frozen Qwen3.5-9B four-ratio crops scored by the GPT visual judge"
 ```
+
+### Policy Model Families
+
+The evaluator isolates model-specific vLLM input formatting behind `--model-family`:
+
+| Family | Blob model path | Request format | Runtime |
+|---|---|---|---|
+| `qwen35` | `/mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B` | Qwen processor chat template | vLLM 0.24 |
+| `internvl2` | `/mnt/blob_output/HuggingFace/Models/OpenGVLab/InternVL2-8B` | InternLM2 tokenizer chat template with `<image>` | vLLM 0.24 |
+| `molmo` | `/mnt/blob_output/HuggingFace/Models/allenai/Molmo-7B-D-0924` | vLLM Molmo `<|im_start|>...` template | vLLM 0.7.0 |
+
+InternVL2 and Molmo use `trust_remote_code=True`. InternVL2 limits dynamic image tiling to four
+patches by default and pins `sentencepiece==0.2.0` because the verified official tokenizer contains
+a legacy NUL piece rejected by SentencePiece 0.2.1+. The trusted tokenizer artifact is identified by
+SHA-256 `f868398fc4e05ee1e8aeba95ddf18ddcc45b8bce55d5093bead5bbf80429b48b`.
+Molmo uses an isolated environment pinned to `torch==2.5.1`,
+`transformers==4.48.1`, and `vllm==0.7.0`; this avoids the documented Molmo preprocessing and
+quality regressions in newer dependency combinations.
+
+Each model config has a one-image/four-ratio preflight and a separate full job. Always run the
+preflight first:
+
+```bash
+amlt run amlt_image_once_qwen35_vlm_eval.yaml :qwen35-image-once-preflight \
+  qwen35-crop-preflight-<run-id>
+
+amlt run amlt_image_once_internvl2_vlm_eval.yaml :internvl2-8b-preflight \
+  internvl2-crop-preflight-<run-id>
+
+amlt run amlt_image_once_molmo_vlm_eval.yaml :molmo-7b-d-preflight \
+  molmo-crop-preflight-<run-id>
+```
+
+After `_EVAL_COMPLETE.json` and four completed Judge results are present, submit the corresponding
+full job explicitly:
+
+```bash
+amlt run amlt_image_once_internvl2_vlm_eval.yaml :internvl2-8b-full \
+  internvl2-crop-full-<run-id>
+
+amlt run amlt_image_once_molmo_vlm_eval.yaml :molmo-7b-d-full \
+  molmo-crop-full-<run-id>
+```
+
+Every run records the model name/family, config and weight-index fingerprints, effective policy and
+Judge prompt hashes, vLLM/Transformers versions, request format, and rendered policy prompts.
+
+Compare completed full runs by matching the same `task_id`. The first run is the reference; lower
+Judge tiers count as wins:
+
+```bash
+python projects/news_image_crop_benchmark/scripts/compare_policy_models.py \
+  --run qwen=/mnt/blob_output/v-yukunban/crop-image-dataset/results/<qwen-run> \
+  --run internvl2=/mnt/blob_output/v-yukunban/crop-image-dataset/results/<internvl-run> \
+  --run molmo=/mnt/blob_output/v-yukunban/crop-image-dataset/results/<molmo-run> \
+  --output-dir /mnt/blob_output/v-yukunban/crop-image-dataset/results/model-comparison
+```
+
+The comparison refuses runs with different dataset, policy prompt, Judge prompt, target ratios, or
+sampling/retry settings, or task coverage. It writes paired JSONL/Parquet details plus overall and
+per-ratio win/tie/loss reports.
+
+The cross-model comparison prompt is `config/policy_prompts/v1_strict_normalized.txt`. All models
+return the same exact JSON object with integer percentage fields `cx_pct`, `cy_pct`, and `area_pct`.
+The evaluator validates that public protocol before applying the same deterministic conversion to
+internal renderer units (`cx = cx_pct * 10`, `cy = cy_pct * 10`, `area = area_pct * 10`). The prompt
+contains no fixed numeric action example. Its editorial guidance favors a moderately wider crop when
+tight and wider crops communicate the subject equally well, while still allowing irrelevant background,
+secondary subjects, and decorative margins to be removed. Retries use the same percentage-field
+requirements for every model.
+
+Every preflight invokes `scripts/check_eval_gate.py`. The AMLT job passes only when all 16 tasks
+(four images by four ratios) produce valid actions, no task exhausts its generation retries, all GPT Judge requests
+complete, and no Judge request falls back or fails. This prevents a technically successful process
+with zero scoreable crops from being mistaken for a usable model integration.
 
 See `docs/environment.md` before installing the training stack. Formal quality claims require the small human golden set described in `docs/experiment_plan.md`.

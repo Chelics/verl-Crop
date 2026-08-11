@@ -29,8 +29,10 @@ def make_webp_payload(color: str = "white") -> bytes:
 
 def make_args(max_attempts: int = 3):
     return SimpleNamespace(
+        model_family="qwen35",
         image_max_pixels=1048576,
         image_min_pixels=65536,
+        internvl_max_dynamic_patch=4,
         tensor_parallel_size=1,
         gpu_memory_utilization=0.6,
         max_model_len=2176,
@@ -41,6 +43,8 @@ def make_args(max_attempts: int = 3):
         top_p=0.95,
         max_tokens=128,
         seed=42,
+        canonicalize_bare_json=False,
+        action_protocol="legacy-crop-json",
     )
 
 
@@ -82,6 +86,109 @@ def test_raw_row_expands_to_four_ratio_tasks_without_using_reference_crop(tmp_pa
     assert tasks[0]["prompt"].startswith("<image>\nHeadline: A news title\nRatio: 1")
     assert all("must not be used" not in json.dumps(task) for task in tasks)
     assert all(Path(task["image_path"]).is_file() for task in tasks)
+
+
+def test_policy_model_adapters_build_native_prompts_and_engine_options():
+    module = load_evaluator_module()
+    image = Image.new("RGB", (80, 60), color="white")
+    prompt = "<image>\nCrop this image"
+
+    class QwenRenderer:
+        def apply_chat_template(self, messages, **kwargs):
+            assert kwargs["enable_thinking"] is False
+            assert messages[0]["content"][1]["text"] == "Crop this image"
+            return "qwen-rendered"
+
+    class InternRenderer:
+        def apply_chat_template(self, messages, **kwargs):
+            assert "enable_thinking" not in kwargs
+            assert messages == [{"role": "user", "content": prompt}]
+            return "intern-rendered"
+
+        def convert_tokens_to_ids(self, token):
+            return {"<|im_start|>": 10, "<|im_end|>": 11}.get(token, -1)
+
+    qwen = module.PolicyModelAdapter.create("qwen35")
+    intern = module.PolicyModelAdapter.create("internvl2")
+    molmo = module.PolicyModelAdapter.create("molmo")
+    qwen_request = qwen.build_request(
+        QwenRenderer(), prompt, image, image_max_pixels=100, image_min_pixels=10
+    )
+    intern_request = intern.build_request(
+        InternRenderer(), prompt, image, image_max_pixels=100, image_min_pixels=10
+    )
+    molmo_request = molmo.build_request(
+        None, prompt, image, image_max_pixels=100, image_min_pixels=10
+    )
+
+    assert qwen_request["prompt"] == "qwen-rendered"
+    assert qwen_request["mm_processor_kwargs"]["size"]["longest_edge"] == 100
+    assert intern_request["prompt"] == "intern-rendered"
+    assert intern.llm_kwargs(internvl_max_dynamic_patch=4) == {
+        "trust_remote_code": True,
+        "mm_processor_kwargs": {"max_dynamic_patch": 4},
+    }
+    assert intern.sampling_kwargs(InternRenderer()) == {"stop_token_ids": [10, 11]}
+    assert molmo_request["prompt"] == "Crop this image"
+    assert molmo.llm_kwargs(internvl_max_dynamic_patch=4) == {"trust_remote_code": True}
+    image.close()
+
+
+def test_policy_model_adapter_canonicalizes_only_exact_bare_crop_json():
+    adapter = load_evaluator_module().PolicyModelAdapter.create("internvl2")
+
+    canonical, normalized = adapter.canonicalize_response('{"cx": 453, "cy": 120, "area": 292}')
+    assert canonical == '<crop>{"cx": 453, "cy": 120, "area": 292}</crop>'
+    assert normalized
+
+    for response in (
+        'Result: {"cx": 453, "cy": 120, "area": 292}',
+        '{"cx": 453, "cy": 120, "area": 292, "ratio": 1.59}',
+        '<crop>{"cx": 453, "cy": 120, "area": 292}</crop>',
+    ):
+        canonical, normalized = adapter.canonicalize_response(response)
+        assert canonical == response
+        assert not normalized
+
+
+def test_retry_prompt_includes_previous_validation_error():
+    module = load_evaluator_module()
+    base_prompt = "<image>\nReturn a crop."
+    prompt = module.build_attempt_prompt(
+        base_prompt,
+        [{"parse_error": "area must be in (0, 1000]", "response": "bad"}],
+    )
+
+    assert prompt.startswith(base_prompt)
+    assert "area must be in (0, 1000]" in prompt
+    assert "area is a normalized integer in [1, 1000]" in prompt
+
+
+def test_percentage_retry_prompt_uses_public_percentage_fields():
+    module = load_evaluator_module()
+    prompt = module.build_attempt_prompt(
+        "<image>\nReturn a crop.",
+        [{"parse_error": "area_pct must be in [1, 100]"}],
+        "percent-json-v1",
+    )
+
+    assert "cx_pct and cy_pct" in prompt
+    assert "area_pct is an integer in [1, 100]" in prompt
+    assert "<crop>" not in prompt
+
+
+def test_judge_metadata_skips_unrelated_braces_before_valid_json():
+    module = load_evaluator_module()
+    metadata = module.parse_judge_metadata(
+        'analysis {not json} then {"evaluation":{"tier_name":"Suboptimal",'
+        '"rules":["T2.3"],"confidence_score":"high"}} trailing {noise}'
+    )
+
+    assert metadata == {
+        "rules": ["T2.3"],
+        "confidence_score": "high",
+        "tier_name": "Suboptimal",
+    }
 
 
 def test_generation_retries_invalid_output_with_new_seed_and_keeps_history(tmp_path):
@@ -139,6 +246,66 @@ def test_generation_retries_invalid_output_with_new_seed_and_keeps_history(tmp_p
     assert progress["status"] == "valid"
     assert [attempt["valid"] for attempt in progress["attempts"]] == [False, True]
     assert progress["attempts"][0]["response"] == "invalid"
+
+
+def test_generation_canonicalizes_bare_json_and_preserves_raw_response(tmp_path):
+    module = load_evaluator_module()
+
+    class FakeProcessor:
+        def apply_chat_template(self, messages, **_kwargs):
+            return messages[0]["content"][1]["text"]
+
+    class FakeAutoProcessor:
+        @staticmethod
+        def from_pretrained(_model_path, local_files_only):
+            assert local_files_only
+            return FakeProcessor()
+
+    class FakeSamplingParams:
+        def __init__(self, **_kwargs):
+            pass
+
+    class FakeLLM:
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate(self, requests, sampling_params):
+            response = '{"cx":453,"cy":120,"area":292}'
+            return [SimpleNamespace(outputs=[SimpleNamespace(text=response)]) for _ in requests]
+
+    image_path = tmp_path / "image.webp"
+    image_path.write_bytes(make_webp_payload())
+    task = {
+        "task_id": "image__ratio_1",
+        "prompt": "<image>\nCrop this image",
+        "image_path": str(image_path),
+    }
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoProcessor = FakeAutoProcessor
+    fake_vllm = types.ModuleType("vllm")
+    fake_vllm.LLM = FakeLLM
+    fake_vllm.SamplingParams = FakeSamplingParams
+    args = make_args()
+    args.canonicalize_bare_json = True
+
+    with patch.dict(sys.modules, {"transformers": fake_transformers, "vllm": fake_vllm}):
+        module.run_generation_worker(
+            rank=0,
+            gpu_devices=["0"],
+            tasks=[task],
+            output_dir=tmp_path,
+            model_path=tmp_path / "model",
+            args=args,
+        )
+
+    progress = json.loads(module.generation_progress_path(tmp_path, task["task_id"]).read_text())
+    attempt = progress["attempts"][0]
+    assert progress["status"] == "valid"
+    assert attempt["response"] == '{"cx":453,"cy":120,"area":292}'
+    assert attempt["canonical_response"] == '<crop>{"cx":453,"cy":120,"area":292}</crop>'
+    assert attempt["response_normalized"]
+    assert attempt["canonical_format"]
+    assert not attempt["strict_format"]
 
 
 def test_generation_marks_retry_exhausted_after_configured_attempt_limit(tmp_path):
@@ -268,6 +435,10 @@ def test_judge_pipeline_persists_crop_scoring_tables_and_report(tmp_path):
         module.generation_progress_path(tmp_path, task["task_id"]),
         write_progress,
     )
+    module.write_json_atomic(
+        module.judge_progress_path(tmp_path, task["task_id"]),
+        {"task_id": task["task_id"], "status": "failed", "error_type": "TimeoutError"},
+    )
 
     class FakeScorer:
         def __init__(self, path):
@@ -298,9 +469,10 @@ def test_judge_pipeline_persists_crop_scoring_tables_and_report(tmp_path):
 
     details = module.build_details([task], tmp_path)
     summary = module.summarize(details)
+    summary["model_name"] = "Test Model"
     module.write_generation_attempts([task], tmp_path)
     module.write_result_tables(details, summary, tmp_path)
-    module.render_html_report(details, summary, tmp_path)
+    module.render_markdown_report(details, summary, tmp_path)
 
     assert details[0]["judge_status"] == "completed"
     assert details[0]["judge_rules"] == ["T1.2"]
@@ -310,4 +482,10 @@ def test_judge_pipeline_persists_crop_scoring_tables_and_report(tmp_path):
     assert (tmp_path / "details.jsonl").is_file()
     assert (tmp_path / "details.parquet").is_file()
     assert (tmp_path / "summary.csv").is_file()
-    assert (tmp_path / "report.html").is_file()
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "# Test Model Four-Ratio Crop Evaluation" in report
+    assert "## Tier Distribution" in report
+    assert "## Visual Results" in report
+    assert "![Original](renders/originals/image.jpg)" in report
+    assert "![Ratio 1.59](renders/candidates/image__ratio_1.59.jpg)" in report
+    assert "`T1.2`" in report

@@ -1,6 +1,10 @@
 import unittest
 
-from news_crop_benchmark.protocol import parse_crop_action, parse_crop_action_with_format
+from news_crop_benchmark.protocol import (
+    parse_crop_action,
+    parse_crop_action_with_format,
+    parse_percent_crop_action,
+)
 
 
 class CropProtocolTests(unittest.TestCase):
@@ -30,6 +34,32 @@ class CropProtocolTests(unittest.TestCase):
     def test_rejects_out_of_range_action(self):
         with self.assertRaises(ValueError):
             parse_crop_action('<crop>{"cx": -1, "cy": 500, "area": 500}</crop>')
+
+    def test_rejects_non_integer_action(self):
+        with self.assertRaisesRegex(ValueError, "must be integers"):
+            parse_crop_action('<crop>{"cx": 500.1, "cy": 500, "area": 500}</crop>')
+
+    def test_parses_exact_percentage_json_and_converts_to_internal_units(self):
+        result = parse_percent_crop_action('{"cx_pct": 45, "cy_pct": 60, "area_pct": 25}')
+
+        self.assertEqual(result.action.center_x, 450)
+        self.assertEqual(result.action.center_y, 600)
+        self.assertEqual(result.action.area, 250)
+        self.assertTrue(result.strict_format)
+
+    def test_rejects_percentage_json_with_extra_text_or_fields(self):
+        with self.assertRaises(ValueError):
+            parse_percent_crop_action('Result: {"cx_pct": 45, "cy_pct": 60, "area_pct": 25}')
+        with self.assertRaises(ValueError):
+            parse_percent_crop_action(
+                '{"cx_pct": 45, "cy_pct": 60, "area_pct": 25, "ratio": 1.59}'
+            )
+
+    def test_rejects_out_of_range_or_non_integer_percentage_values(self):
+        with self.assertRaisesRegex(ValueError, "must be in"):
+            parse_percent_crop_action('{"cx_pct": 101, "cy_pct": 60, "area_pct": 25}')
+        with self.assertRaisesRegex(ValueError, "must be integers"):
+            parse_percent_crop_action('{"cx_pct": 45.5, "cy_pct": 60, "area_pct": 25}')
 
 
 if __name__ == "__main__":

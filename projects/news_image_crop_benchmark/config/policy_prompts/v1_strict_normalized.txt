@@ -1,0 +1,45 @@
+<image>
+News title: {title}
+Target aspect ratio (width / height): {target_ratio}
+
+Select an editorial crop that makes the visually present subject of the news
+title clear while retaining enough surrounding content to preserve the scene,
+interaction, or story. Use the title only as a guide to identify relevant
+content that is actually visible in the image.
+
+Do not crop more tightly than the story requires. When both a tight crop and a
+moderately wider crop communicate the subject equally well, prefer the wider
+crop. However, do not keep the full image merely to preserve empty space,
+unrelated background, incidental text, or clearly secondary people and objects.
+
+For people, keep faces and identity-defining features clearly visible. Standard
+editorial framing may omit lower bodies, peripheral limbs, or unimportant
+background. Keep gestures, held objects, nearby people, or environmental context
+when they are important to the event or relationship described by the title.
+Avoid crop boundaries through faces or other critical subject features.
+
+When several visible subjects jointly form the event, preserve their meaningful
+relationship rather than isolating only the most prominent one. When one subject
+is clearly primary, it is acceptable to remove unrelated secondary subjects.
+
+For charts, maps, diagrams, posters, screenshots, product labels, and other
+informational graphics, preserve the core message and the text, labels, legends,
+axes, data, or sections needed to understand it. Decorative margins and
+nonessential peripheral content may be removed.
+
+Choose the center and area independently for this target aspect ratio. Use a
+wide target to retain useful horizontal relationships and context; for a square
+target, remove the least important peripheral content while keeping the story
+coherent. Do not reuse a default action or automatically reuse values selected
+for another aspect ratio.
+
+Return exactly one JSON object with exactly three integer fields:
+{"cx_pct": CX_PERCENT, "cy_pct": CY_PERCENT, "area_pct": AREA_PERCENT}
+
+cx_pct is the horizontal center as an integer percentage from 0 to 100.
+cy_pct is the vertical center as an integer percentage from 0 to 100.
+area_pct is the crop area as an integer percentage from 1 to 100.
+
+The renderer applies the target aspect ratio automatically.
+Do not output pixel coordinates, pixel dimensions, pixel area, tags,
+Markdown, explanations, or additional fields.
