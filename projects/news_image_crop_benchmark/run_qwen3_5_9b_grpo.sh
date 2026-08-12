@@ -12,6 +12,7 @@ TEST_FILE=${TEST_FILE:-/mnt/blob_output/v-yukunban/news_image_crop_content_split
 REWARD_FILE=${REWARD_FILE:-${PROJECT_ROOT}/rewards/crop_reward.py}
 CLIP_MODEL_PATH=${CLIP_MODEL_PATH:-/mnt/blob_output/HuggingFace/Models/clip-vit-large-patch14}
 VLM_PROMPT_PATH=${VLM_PROMPT_PATH:-${PROJECT_ROOT}/config/crop_vlm_prompt.txt}
+ACTION_PROTOCOL=${ACTION_PROTOCOL:-legacy-crop-json}
 
 NNODES=${NNODES:-1}
 NDEVICES_PER_NODE=${NDEVICES_PER_NODE:-8}
@@ -74,6 +75,10 @@ if [[ "${REWARD_MODE}" != proxy && "${REWARD_MODE}" != smoke && "${REWARD_MODE}"
     echo "REWARD_MODE must be proxy, smoke, or vlm" >&2
     exit 1
 fi
+if [[ "${ACTION_PROTOCOL}" != legacy-crop-json && "${ACTION_PROTOCOL}" != percent-json-v1 ]]; then
+    echo "ACTION_PROTOCOL must be legacy-crop-json or percent-json-v1" >&2
+    exit 1
+fi
 
 DATA=(
     algorithm.adv_estimator=grpo
@@ -104,6 +109,7 @@ REWARD=(
     +reward.custom_reward_function.reward_kwargs.clip_model_path="${CLIP_MODEL_PATH}"
     +reward.custom_reward_function.reward_kwargs.clip_device=${CLIP_DEVICE}
     +reward.custom_reward_function.reward_kwargs.vlm_prompt_path="${VLM_PROMPT_PATH}"
+    +reward.custom_reward_function.reward_kwargs.action_protocol=${ACTION_PROTOCOL}
 )
 
 MODEL=(

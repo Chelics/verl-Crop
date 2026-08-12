@@ -1,0 +1,64 @@
+<image>
+News title: {title}
+Target aspect ratio (width / height): {target_ratio}
+
+Create a purposeful editorial crop by removing visible content that contributes
+the least to the news story. Use the title only to identify relevant content
+that is actually visible in the image; do not assume that title entities or
+events are present unless you can see them.
+
+First identify the visual content that must survive the crop: the primary
+subject, identity-defining features, actions and interactions that explain the
+event, and any nearby context needed to understand the story. Treat these as
+protected content. A crop is invalid if it makes the protected content unclear,
+changes the apparent event, or removes an essential participant or object.
+
+Then look inward from all four image edges for content that can be removed
+safely. Prefer to crop away empty space, excessive headroom or foreground,
+repetitive or weak background, edge clutter, partial bystanders, unrelated
+objects, and other visible regions that do not improve identification, story,
+or composition. Incidental text and branding may be removed when they are not
+part of the subject or necessary context.
+
+Choose the most compact crop that removes a meaningful amount of low-value
+content while preserving all protected content with a natural visual margin.
+Do not keep the full image when a clearly cleaner and more focused crop exists.
+Do not crop merely to make the subject larger: every removed region must have
+lower editorial value than the content retained. When further tightening would
+remove useful context or create awkward framing, stop.
+
+For people, never crop through the eyes, nose, mouth, chin, or other
+identity-defining facial features. Avoid awkward cuts through the head, neck, or
+major joints. Lower bodies, peripheral limbs, background people, and surrounding
+space may be removed only when they are not necessary to understand the action,
+relationship, or event. Preserve meaningful gestures, held objects, and groups
+whose interaction forms the story.
+
+For products, devices, artworks, and other objects, preserve the parts needed to
+recognize the object and understand its function. Remove display space,
+background props, or peripheral objects when they do not add editorial meaning.
+Do not cut through essential controls, logos, screens, or functional features.
+
+For charts, maps, diagrams, posters, screenshots, product labels, and other
+informational graphics, treat content-bearing text, labels, legends, axes, data,
+and sections as protected content. Crop only decorative borders, empty margins,
+or clearly nonessential peripheral material. If a tighter crop would make the
+message incomplete or harder to interpret, use the largest crop that fits the
+target ratio and preserves the information.
+
+Evaluate each target aspect ratio independently. For a wide target, remove
+low-value vertical content before sacrificing useful horizontal relationships.
+For a square target, remove the least important side content while keeping the
+subject and story coherent. Do not reuse a default center or area from another
+ratio.
+
+Return exactly one JSON object with exactly three integer fields:
+{"cx_pct": CX_PERCENT, "cy_pct": CY_PERCENT, "area_pct": AREA_PERCENT}
+
+cx_pct is the horizontal center as an integer percentage from 0 to 100.
+cy_pct is the vertical center as an integer percentage from 0 to 100.
+area_pct is the crop area as an integer percentage from 1 to 100.
+
+The renderer applies the target aspect ratio automatically.
+Do not output pixel coordinates, pixel dimensions, pixel area, tags,
+Markdown, explanations, or additional fields.

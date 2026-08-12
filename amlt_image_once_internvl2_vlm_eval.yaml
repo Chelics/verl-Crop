@@ -39,7 +39,7 @@ jobs:
       set -euo pipefail
       DATA_PATH=/mnt/blob_output/v-yukunban/crop-image-dataset/image_once_test.parquet
       MODEL_PATH=/mnt/blob_output/HuggingFace/Models/OpenGVLab/InternVL2-8B
-      RUN_ID=internvl2-8b-four-ratios-vlm-preflight-percent-v1-balanced-v1
+      RUN_ID=internvl2-8b-four-ratios-vlm-preflight-crop-first-v2
       OUTPUT_DIR=/mnt/blob_output/v-yukunban/crop-image-dataset/results/$$RUN_ID
       test -f "$$DATA_PATH"
       test -d "$$MODEL_PATH"
@@ -53,7 +53,7 @@ jobs:
         --model-family internvl2 \
         --model-name InternVL2-8B \
         --data "$$DATA_PATH" \
-        --policy-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v1_strict_normalized.txt \
+        --policy-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v2_crop_first.txt \
         --action-protocol percent-json-v1 \
         --vlm-prompt-path projects/news_image_crop_benchmark/config/crop_vlm_prompt.txt \
         --output-dir "$$OUTPUT_DIR" \
@@ -89,7 +89,7 @@ jobs:
       set -euo pipefail
       DATA_PATH=/mnt/blob_output/v-yukunban/crop-image-dataset/image_once_test.parquet
       MODEL_PATH=/mnt/blob_output/HuggingFace/Models/OpenGVLab/InternVL2-8B
-      RUN_ID=internvl2-8b-four-ratios-vlm-full-percent-v1-balanced-v1
+      RUN_ID=internvl2-8b-four-ratios-vlm-full-crop-first-v2
       OUTPUT_DIR=/mnt/blob_output/v-yukunban/crop-image-dataset/results/$$RUN_ID
       test -f "$$DATA_PATH"
       test -d "$$MODEL_PATH"
@@ -103,7 +103,7 @@ jobs:
         --model-family internvl2 \
         --model-name InternVL2-8B \
         --data "$$DATA_PATH" \
-        --policy-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v1_strict_normalized.txt \
+        --policy-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v2_crop_first.txt \
         --action-protocol percent-json-v1 \
         --vlm-prompt-path projects/news_image_crop_benchmark/config/crop_vlm_prompt.txt \
         --output-dir "$$OUTPUT_DIR" \

@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
+description: One-step Qwen3.5-9B VLM-GRPO smoke on image_once data with the v1 percentage prompt
+
+target:
+  service: manifold
+  name: Feeds
+  workspace_name: CS-NewsAndFeeds-Singularity
+
+storage:
+  blob_output:
+    storage_account_name: csnewsandfeeds4150361735
+    container_name: unium
+    mount_dir: /mnt/blob_output
+    is_output: true
+
+environment:
+  image: amlt-sing/acpt-torch2.8.x-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - python -m pip install uv
+    - uv python install 3.12
+    - uv venv --seed --python 3.12 .venv-qwen35
+    - uv pip install --python .venv-qwen35/bin/python "vllm==0.24.0"
+    - uv pip install --python .venv-qwen35/bin/python -e .
+    - uv pip install --python .venv-qwen35/bin/python -e "projects/news_image_crop_benchmark[data,train,test,vlm]"
+    - uv pip uninstall --python .venv-qwen35/bin/python opencv-python
+    - uv pip install --python .venv-qwen35/bin/python --reinstall opencv-python-headless
+
+code:
+  local_dir: $CONFIG_DIR
+
+jobs:
+  - name: image-once-v1-grpo-smoke
+    sku: 80G8-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: /subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895/resourceGroups/AMLStudio/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml
+    command: |
+      set -euo pipefail
+      RAW_ROOT=/mnt/blob_output/v-yukunban/crop-image-dataset
+      CONVERTED_ROOT=$$RAW_ROOT/verl-v1-percent
+      TRAIN_FILE=$$CONVERTED_ROOT/image_once_train_verl.parquet
+      TEST_FILE=$$CONVERTED_ROOT/image_once_test_verl.parquet
+      PROMPT_PATH=projects/news_image_crop_benchmark/config/policy_prompts/v1_strict_normalized.txt
+      test -f "$$RAW_ROOT/image_once_train.parquet"
+      test -f "$$RAW_ROOT/image_once_test.parquet"
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/convert_image_once_to_verl.py \
+        --train "$$RAW_ROOT/image_once_train.parquet" \
+        --test "$$RAW_ROOT/image_once_test.parquet" \
+        --output-dir "$$CONVERTED_ROOT" \
+        --policy-prompt-path "$$PROMPT_PATH"
+      export CROP_VLM_LOG_PATH="$$AMLT_OUTPUT_DIR/vlm_responses.jsonl"
+      export CROP_VLM_VISUAL_LOG_DIR="$$AMLT_OUTPUT_DIR/vlm_visuals"
+      export CROP_VLM_VISUAL_LOG_EVERY=4
+      export CROP_VLM_TIMEOUT=45
+      export CROP_VLM_MAX_RETRIES=2
+      export PYTHON_BIN=.venv-qwen35/bin/python
+      export REWARD_MODE=vlm
+      export ACTION_PROTOCOL=percent-json-v1
+      export REWARD_NUM_WORKERS=1
+      export TRAIN_FILE
+      export TEST_FILE
+      export TRAIN_MAX_SAMPLES=8
+      export VAL_MAX_SAMPLES=8
+      export TRAIN_BATCH_SIZE=8
+      export PPO_MINI_BATCH_SIZE=8
+      export ROLLOUT_N=2
+      export TOTAL_TRAINING_STEPS=1
+      export TEST_FREQ=-1
+      export SAVE_FREQ=-1
+      export OUTPUT_DIR="$$AMLT_OUTPUT_DIR/checkpoints"
+      export PROJECT_NAME=news_image_crop_image_once_v1_smoke
+      export EXPERIMENT_NAME=image_once_v1_percent_grpo_smoke
+      DRY_RUN=1 bash projects/news_image_crop_benchmark/run_qwen3_5_9b_grpo.sh \
+        > "$$AMLT_OUTPUT_DIR/resolved_config.txt"
+      bash projects/news_image_crop_benchmark/run_qwen3_5_9b_grpo.sh
+      cp "$$CONVERTED_ROOT/conversion_report.json" "$$AMLT_OUTPUT_DIR/conversion_report.json"

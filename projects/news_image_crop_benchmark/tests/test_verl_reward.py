@@ -61,6 +61,29 @@ class VerlRewardTests(unittest.TestCase):
         self.assertEqual(result["score"], -1.0)
         self.assertEqual(result["format_reward"], 0.0)
 
+    def test_percentage_protocol_converts_public_fields_to_internal_geometry(self):
+        result = self.reward_module.compute_score(
+            data_source="news_image_crop",
+            solution_str='{"cx_pct":50,"cy_pct":50,"area_pct":40}',
+            ground_truth=json.dumps({"image_width": 100, "image_height": 80, "target_ratio": 1.0}),
+            reward_mode="smoke",
+            action_protocol="percent-json-v1",
+        )
+
+        self.assertEqual(result["score"], 1.0)
+        self.assertEqual(result["strict_format"], 1.0)
+
+    def test_percentage_protocol_rejects_legacy_action(self):
+        result = self.reward_module.compute_score(
+            data_source="news_image_crop",
+            solution_str='<crop>{"cx":500,"cy":500,"area":400}</crop>',
+            ground_truth=json.dumps({"image_width": 100, "image_height": 80, "target_ratio": 1.0}),
+            reward_mode="smoke",
+            action_protocol="percent-json-v1",
+        )
+
+        self.assertEqual(result["score"], -1.0)
+
     def test_missing_closing_tag_is_scored_with_format_penalty(self):
         result = self.reward_module.compute_score(
             data_source="news_image_crop",

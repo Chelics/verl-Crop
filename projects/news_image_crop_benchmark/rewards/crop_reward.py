@@ -7,7 +7,7 @@ from typing import Any
 from PIL import Image
 
 from news_crop_benchmark.geometry import action_to_bbox
-from news_crop_benchmark.protocol import parse_crop_action_with_format
+from news_crop_benchmark.protocol import parse_crop_action_with_format, parse_percent_crop_action
 from news_crop_benchmark.proxy_scorer import (
     compute_visual_proxy_metrics,
     crop_image,
@@ -50,6 +50,7 @@ def compute_score(
     clip_device: str = "cpu",
     clip_delta_scale: float = 20.0,
     vlm_prompt_path: str | None = None,
+    action_protocol: str = "legacy-crop-json",
     recoverable_format_reward: float = 0.5,
     format_penalty_weight: float = 0.1,
 ) -> dict[str, float]:
@@ -66,6 +67,8 @@ def compute_score(
         raise ValueError("clip_model_path is required in proxy mode")
     if reward_mode == "vlm" and not vlm_prompt_path:
         raise ValueError("vlm_prompt_path is required in vlm mode")
+    if action_protocol not in {"legacy-crop-json", "percent-json-v1"}:
+        raise ValueError("action_protocol must be 'legacy-crop-json' or 'percent-json-v1'")
     if not 0.0 <= recoverable_format_reward < 1.0:
         raise ValueError("recoverable_format_reward must be in [0, 1)")
     if format_penalty_weight < 0.0:
@@ -77,7 +80,11 @@ def compute_score(
         image_width = int(metadata["image_width"])
         image_height = int(metadata["image_height"])
         target_ratio = float(metadata["target_ratio"])
-        parse_result = parse_crop_action_with_format(solution_str)
+        parse_result = (
+            parse_percent_crop_action(solution_str)
+            if action_protocol == "percent-json-v1"
+            else parse_crop_action_with_format(solution_str)
+        )
         bbox = action_to_bbox(
             parse_result.action,
             image_width=image_width,

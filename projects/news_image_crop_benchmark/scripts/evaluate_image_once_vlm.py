@@ -403,7 +403,11 @@ def run_generation_worker(
                     action = parse_result.action
                     attempt_record["valid"] = True
                     attempt_record["strict_format"] = parse_result.strict_format and not response_normalized
-                    attempt_record["canonical_format"] = parse_result.strict_format
+                    attempt_record["canonical_format"] = (
+                        True if args.action_protocol == "percent-json-v1" else parse_result.strict_format
+                    )
+                    if args.action_protocol == "percent-json-v1" and not parse_result.strict_format:
+                        attempt_record["response_normalized"] = True
                     attempts[current_task_id].append(attempt_record)
                     write_json_atomic(
                         generation_progress_path(output_dir, current_task_id),
@@ -1112,7 +1116,7 @@ def main() -> None:
         "model_name": args.model_name,
         "model_family": args.model_family,
         "output_protocol_version": (
-            "percent-json-v1"
+            "percent-json-v1-fenced-recovery-v1"
             if args.action_protocol == "percent-json-v1"
             else (
                 "crop-json-canonicalization-v1"

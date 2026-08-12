@@ -55,6 +55,23 @@ class CropProtocolTests(unittest.TestCase):
                 '{"cx_pct": 45, "cy_pct": 60, "area_pct": 25, "ratio": 1.59}'
             )
 
+    def test_recovers_single_json_code_block_without_extra_text(self):
+        result = parse_percent_crop_action(
+            '```json\n{"cx_pct": 45, "cy_pct": 60, "area_pct": 25}\n```'
+        )
+
+        self.assertEqual(result.action.center_x, 450)
+        self.assertEqual(result.action.center_y, 600)
+        self.assertEqual(result.action.area, 250)
+        self.assertFalse(result.strict_format)
+
+    def test_rejects_json_code_block_with_surrounding_explanation(self):
+        with self.assertRaises(ValueError):
+            parse_percent_crop_action(
+                'Here is the crop:\n```json\n'
+                '{"cx_pct": 45, "cy_pct": 60, "area_pct": 25}\n```'
+            )
+
     def test_rejects_out_of_range_or_non_integer_percentage_values(self):
         with self.assertRaisesRegex(ValueError, "must be in"):
             parse_percent_crop_action('{"cx_pct": 101, "cy_pct": 60, "area_pct": 25}')

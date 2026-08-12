@@ -8,6 +8,7 @@ from news_crop_benchmark.geometry import CropAction
 
 _CROP_PATTERN = re.compile(r"<crop>\s*(\{.*?\})\s*</crop>", re.DOTALL)
 _MISSING_CLOSING_TAG_PATTERN = re.compile(r"^\s*<crop>\s*(\{.*\})\s*$", re.DOTALL)
+_JSON_CODE_BLOCK_PATTERN = re.compile(r"^\s*```json\s*(\{.*\})\s*```\s*$", re.DOTALL | re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -54,10 +55,9 @@ def parse_crop_action_with_format(response: str) -> CropParseResult:
     return CropParseResult(action=_parse_payload(recoverable_match.group(1)), strict_format=False)
 
 
-def parse_percent_crop_action(response: str) -> CropParseResult:
-    """Parse an exact percentage-based JSON action and convert it to internal units."""
+def _parse_percent_payload(payload_text: str) -> CropAction:
     try:
-        payload = json.loads(response.strip())
+        payload = json.loads(payload_text)
     except json.JSONDecodeError as error:
         raise ValueError("response must be exactly one valid JSON object") from error
 
@@ -77,4 +77,19 @@ def parse_percent_crop_action(response: str) -> CropParseResult:
         area=float(payload["area_pct"] * 10),
     )
     action.validate()
-    return CropParseResult(action=action, strict_format=True)
+    return action
+
+
+def parse_percent_crop_action(response: str) -> CropParseResult:
+    """Parse exact percentage JSON, conservatively recovering one JSON code block."""
+    stripped = response.strip()
+    try:
+        return CropParseResult(action=_parse_percent_payload(stripped), strict_format=True)
+    except ValueError as strict_error:
+        fenced_match = _JSON_CODE_BLOCK_PATTERN.fullmatch(response)
+        if fenced_match is None:
+            raise strict_error
+        return CropParseResult(
+            action=_parse_percent_payload(fenced_match.group(1)),
+            strict_format=False,
+        )
