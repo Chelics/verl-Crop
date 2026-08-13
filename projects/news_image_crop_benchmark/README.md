@@ -156,6 +156,74 @@ Use `--resume` with the same arguments to continue an interrupted run. The outpu
 and descriptive crop/pad counts by ratio. No classification-quality metric is reported until human
 labels are added.
 
+## Mode-First Crop-or-Pad Pipeline
+
+`scripts/evaluate_image_once_layout.py` connects mode selection to final layout rendering. It first
+selects `crop` or `pad` for every image-ratio task. Crop tasks are sent to the v1 percentage crop
+prompt; pad tasks do not require a second model call. For padding, the renderer takes the
+per-channel median of the outer 5% source-image border, expands the smallest enclosing canvas at the
+target ratio, and centers the source image without resizing or stretching it.
+
+Run the full pipeline from scratch by omitting `--mode-results-dir`. To reuse a completed mode-only
+run, pass its result directory:
+
+```bash
+PYTHONPATH=projects/news_image_crop_benchmark/src \
+  python projects/news_image_crop_benchmark/scripts/evaluate_image_once_layout.py \
+  --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B \
+  --model-family qwen35 \
+  --model-name Qwen3.5-9B \
+  --data /mnt/blob_output/v-yukunban/crop-image-dataset/image_once_test.parquet \
+  --mode-prompt-path projects/news_image_crop_benchmark/config/mode_prompts/v1_mode_only.txt \
+  --crop-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v1_strict_normalized.txt \
+  --mode-results-dir /mnt/blob_output/v-yukunban/crop-image-dataset/results/qwen35-mode-only-v1-full-20260812 \
+  --output-dir /mnt/blob_output/v-yukunban/crop-image-dataset/results/qwen35-layout-v1-edge-pad \
+  --run-id qwen35-layout-v1-edge-pad \
+  --resume
+```
+
+The unified report shows the original image and all four final layouts. Each crop records the v1
+policy response and percentage action; each pad records the extracted RGB/hex background,
+content box, and padding fraction. `review_template.csv` provides blank mode and layout-quality
+fields for later human annotation. This stage reports descriptive pipeline statistics only and
+does not call the GPT crop judge.
+
+## Interactive Result Viewer
+
+Install the isolated viewer dependency:
+
+```powershell
+uv venv --seed --python 3.12 .venv-viewer
+.venv-viewer\Scripts\python.exe -m pip install -e "projects/news_image_crop_benchmark[viewer]"
+```
+
+On Windows, mount the Blob result root from a normal, non-administrator terminal so the viewer can
+see the drive in the same user session:
+
+```powershell
+rclone mount `
+  ":azureblob,account=csnewsandfeeds4150361735,use_az=true:unium/v-yukunban/crop-image-dataset/results" `
+  S: --read-only --links --vfs-cache-mode full --dir-cache-time 5m
+```
+
+Keep the mount terminal running. Start the viewer in another terminal:
+
+```powershell
+.venv-viewer\Scripts\python.exe projects/news_image_crop_benchmark/scripts/serve_results.py `
+  --result-dir S:\qwen35-image-once-four-ratios-vlm-crop-first-v2
+```
+
+`--result-dir` accepts either the mounted results root (for example, `S:\`) or one result directory.
+When given one result directory, the viewer selects it initially and discovers other valid sibling
+experiments automatically. Use the Experiment dropdown to switch runs without changing code or
+restarting the server. Enter a 1-based sample number and press Enter or Jump to move directly within
+the current filtered result set.
+
+Pass `--share` to create a temporary Gradio link. For a shared link, set both
+`GRADIO_AUTH_USERNAME` and `GRADIO_AUTH_PASSWORD` in the launch terminal to require basic login.
+Add `--single-result` when sharing to expose only the selected result directory rather than its
+sibling experiments. The viewer reads metadata once and only resolves images for the current sample.
+
 ## Image-Once Zero-Shot Evaluation
 
 `scripts/evaluate_image_once_vlm.py` evaluates a frozen vision-language policy model directly on the raw

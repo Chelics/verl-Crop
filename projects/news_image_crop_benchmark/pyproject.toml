@@ -26,6 +26,7 @@ vlm = [
     "openai>=2.0.0",
     "Pillow>=10.0.0",
 ]
+viewer = ["gradio>=6,<7"]
 test = ["pytest>=8.0.0"]
 
 [tool.setuptools]
