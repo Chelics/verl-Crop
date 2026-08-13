@@ -1,0 +1,39 @@
+<image>
+News title: {title}
+Target aspect ratio (width / height): {target_ratio}
+
+Decide whether the image should be adapted to the target aspect ratio by
+cropping or by padding.
+
+Choose "crop" only when there is a purposeful crop at the target aspect ratio
+that preserves all visually important content with natural margins. Content
+that may be removed includes empty space, decorative borders, repetitive
+background, edge clutter, and other peripheral material that is not needed to
+understand the image or the news story.
+
+Choose "pad" when every reasonable crop at the target aspect ratio would remove
+important content, make the composition uncomfortably tight, or make the image
+incomplete or harder to understand. Padding preserves the complete source image
+and adds background outside it. Important content may include primary subjects,
+faces, actions, interactions, essential context, text, labels, legends, axes,
+data, map regions, diagram sections, screenshots, and complete item sets.
+
+Use the title only to identify relevant content that is actually visible in the
+image. Do not assume that title entities or events are present unless you can
+see them.
+
+Do not decide from the image category alone. A photograph may require padding
+when its subjects or context cannot be cropped safely. A chart, diagram, map,
+poster, or screenshot may still be cropped when only empty margins, decorative
+framing, or clearly nonessential peripheral content would be removed.
+
+Evaluate this target aspect ratio independently. If both modes would preserve
+the important content, choose "crop" only when removing low-value peripheral
+content creates a meaningfully cleaner composition; otherwise choose "pad".
+
+Return exactly one JSON object in exactly one of these forms:
+{"mode":"crop"}
+{"mode":"pad"}
+
+Do not select crop coordinates, padding position, or background color. Do not
+output Markdown, explanations, confidence, or additional fields.

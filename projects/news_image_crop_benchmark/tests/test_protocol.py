@@ -3,11 +3,28 @@ import unittest
 from news_crop_benchmark.protocol import (
     parse_crop_action,
     parse_crop_action_with_format,
+    parse_mode_decision,
     parse_percent_crop_action,
 )
 
 
 class CropProtocolTests(unittest.TestCase):
+    def test_parses_exact_mode_decision(self):
+        self.assertEqual(parse_mode_decision('{"mode":"crop"}').mode, "crop")
+        self.assertEqual(parse_mode_decision('\n{"mode":"pad"}\n').mode, "pad")
+
+    def test_rejects_non_strict_or_invalid_mode_decision(self):
+        invalid_responses = (
+            'Result: {"mode":"crop"}',
+            '```json\n{"mode":"pad"}\n```',
+            '{"mode":"fit"}',
+            '{"mode":"crop","confidence":"high"}',
+            '[{"mode":"crop"}]',
+        )
+        for response in invalid_responses:
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                parse_mode_decision(response)
+
     def test_parses_crop_json_inside_response(self):
         action = parse_crop_action('Result: <crop>{"cx": 500, "cy": 625, "area": 420}</crop>')
 

@@ -128,6 +128,34 @@ The conversion and rewrite reports include the effective policy prompt SHA-256. 
 `TRAIN_FILE` and `TEST_FILE` at the versioned outputs when launching GRPO; changing a template file
 does not alter prompts already stored in Parquet.
 
+## Mode-Only Crop-or-Pad Diagnosis
+
+`scripts/evaluate_image_once_mode.py` is a standalone zero-shot diagnostic that runs before any crop
+execution. For each source image and target ratio, the model returns exactly `{"mode":"crop"}` or
+`{"mode":"pad"}`. The script does not call the crop renderer, the GPT visual judge, or a background
+color selector.
+
+Run a small Qwen3.5-9B diagnostic with:
+
+```bash
+PYTHONPATH=projects/news_image_crop_benchmark/src \
+  python projects/news_image_crop_benchmark/scripts/evaluate_image_once_mode.py \
+  --model /mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B \
+  --model-family qwen35 \
+  --model-name Qwen3.5-9B \
+  --data /mnt/blob_output/v-yukunban/crop-image-dataset/image_once_test.parquet \
+  --mode-prompt-path projects/news_image_crop_benchmark/config/mode_prompts/v1_mode_only.txt \
+  --output-dir /mnt/blob_output/v-yukunban/news_image_crop_mode_only_qwen35_v1 \
+  --run-id qwen35-mode-only-v1 \
+  --max-images 200
+```
+
+Use `--resume` with the same arguments to continue an interrupted run. The output includes
+`report.html` and `report.md` for qualitative inspection, `review_template.csv` with blank
+`human_label` and `notes` columns, task-level JSONL/Parquet predictions, raw generation attempts,
+and descriptive crop/pad counts by ratio. No classification-quality metric is reported until human
+labels are added.
+
 ## Image-Once Zero-Shot Evaluation
 
 `scripts/evaluate_image_once_vlm.py` evaluates a frozen vision-language policy model directly on the raw

@@ -17,6 +17,25 @@ class CropParseResult:
     strict_format: bool
 
 
+@dataclass(frozen=True)
+class ModeDecision:
+    mode: str
+
+
+def parse_mode_decision(response: str) -> ModeDecision:
+    """Parse an exact ``{"mode":"crop|pad"}`` JSON response."""
+    try:
+        payload = json.loads(response)
+    except json.JSONDecodeError as error:
+        raise ValueError("response must be exactly one valid JSON object") from error
+
+    if not isinstance(payload, dict) or set(payload) != {"mode"}:
+        raise ValueError("mode payload must contain exactly ['mode']")
+    if payload["mode"] not in {"crop", "pad"}:
+        raise ValueError("mode must be exactly 'crop' or 'pad'")
+    return ModeDecision(mode=payload["mode"])
+
+
 def _parse_payload(payload_text: str) -> CropAction:
     try:
         payload = json.loads(payload_text)
