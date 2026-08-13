@@ -89,6 +89,28 @@ def test_score_maps_tier_to_reward_and_sends_two_images():
     assert responses.requests[0]["text"] == {"verbosity": "low"}
 
 
+def test_score_includes_optional_evaluation_context():
+    responses = _FakeResponses('{"evaluation":{"label":"0"}}')
+    scorer = _make_scorer(responses)
+
+    scorer.score_detailed(
+        Image.new("RGB", (80, 60), color="white"),
+        Image.new("RGB", (80, 80), color="white"),
+        "",
+        "A headline",
+        evaluation_context={
+            "target_ratio": 1.0,
+            "selected_mode": "pad",
+            "background_hex": "#FFFFFF",
+        },
+    )
+
+    user_text = responses.requests[0]["input"][0]["content"][-1]["text"]
+    assert '"selected_mode": "pad"' in user_text
+    assert '"target_ratio": 1.0' in user_text
+    assert '"background_hex": "#FFFFFF"' in user_text
+
+
 def test_score_returns_configured_fallback_after_request_failure():
     scorer = _make_scorer(_FakeResponses(error=RuntimeError("service unavailable")))
 

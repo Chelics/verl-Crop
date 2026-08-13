@@ -276,8 +276,16 @@ class CropVLMScorer:
         caption: str,
         headline: str,
         log_context: dict[str, Any] | None = None,
+        evaluation_context: dict[str, Any] | None = None,
     ) -> tuple[float, float]:
-        result = self.score_detailed(original, candidate, caption, headline, log_context)
+        result = self.score_detailed(
+            original,
+            candidate,
+            caption,
+            headline,
+            log_context,
+            evaluation_context,
+        )
         return result.reward, result.label
 
     def score_detailed(
@@ -287,6 +295,7 @@ class CropVLMScorer:
         caption: str,
         headline: str,
         log_context: dict[str, Any] | None = None,
+        evaluation_context: dict[str, Any] | None = None,
     ) -> VLMScoreResult:
         original_prepared = self._prepare_image(original)
         candidate_prepared = self._prepare_image(candidate)
@@ -297,7 +306,8 @@ class CropVLMScorer:
             f"{self.rule_prompt}\n\n"
             "Input Fields:\n"
             f"- Image Caption: {caption or '[not provided]'}\n"
-            f"- Article Headline: {headline}\n\n"
+            f"- Article Headline: {headline}\n"
+            f"- Evaluation Context: {json.dumps(evaluation_context or {}, ensure_ascii=False, sort_keys=True)}\n\n"
             "Image A is the original reference. Image B is the candidate thumbnail. "
             "Return only one valid JSON object following the required schema."
         )
