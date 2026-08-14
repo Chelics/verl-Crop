@@ -3,3 +3,5 @@ projects/news_image_crop_benchmark/pre_diagnostic_fixed_report_standalone.html
 **/__pycache__/
 **/.pytest_cache/
 **/*.pyc
+.venv*/
+.amlt-*-watch.json

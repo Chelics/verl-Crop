@@ -7,7 +7,8 @@ You are provided with:
 3. **Image Caption**.
 4. **Article Headline**.
 5. **Evaluation Context** containing the requested aspect ratio, the selected
-   operation (`crop` or `pad`), and, for padding, the rendered background color.
+  operation (`crop`, `crop_pad`, or `pad`), and, for padding, the rendered
+  background color.
 
 ## Visual Grounding
 
@@ -18,10 +19,10 @@ Do not assume that text entities or events are present when they cannot be seen.
 ## Task
 
 1. Identify the visually present primary subject and information-bearing content.
-2. Determine whether Image B is cropped, padded, identical, or distorted relative
-   to Image A.
-3. Judge whether the selected `crop` or `pad` operation is appropriate for the
-   requested aspect ratio.
+2. Determine whether Image B is cropped, cropped then padded, padded, identical,
+  or distorted relative to Image A.
+3. Judge whether the selected `crop`, `crop_pad`, or `pad` operation is appropriate
+  for the requested aspect ratio.
 4. Assess the final candidate on the 0-5 severity scale below.
 
 Judge the final delivered layout, not merely whether source pixels were retained.
@@ -39,6 +40,14 @@ losing the primary subject, necessary context, or information-bearing content.
 remove important subjects, relationships, text, labels, legends, axes, data, map
 regions, diagram sections, screenshot content, or other content needed to
 understand the image.
+
+**Crop-pad is appropriate** when low-value source margins or edge content can be
+removed safely, but a direct crop to the requested aspect ratio would remove
+important content or become too tight. The retained source region should be
+meaningfully better focused than the complete source, and the subsequent padding
+should preserve that region at a useful display size. Penalize crop-pad when the
+initial crop removes important content, when it provides no meaningful advantage
+over direct padding, or when excessive padding still makes the subject too small.
 
 Do not decide from image category alone. A chart may have removable empty margins,
 and a photograph may need padding when all visible subjects or context are needed.
@@ -64,6 +73,11 @@ and editorially effective.
   pasted onto an unrelated color.
 - **P0.3 Readable Padded Graphic:** A padded chart, map, diagram, poster, document,
   or screenshot remains readable and retains its complete informational structure.
+- **CP0.1 Effective Crop-Pad:** Low-value outer content is removed before padding,
+  producing a larger, clearer, and better-focused final subject without losing
+  necessary content.
+- **CP0.2 Safe Retained Region:** The pre-padding crop preserves all important
+  subjects, relationships, and information with natural margins.
 
 ### Tier 1 - Negligible
 
@@ -78,6 +92,8 @@ meaning or editorial value.
   modest padding does not materially reduce focus, readability, or visual quality.
 - **P1.2 Minor Background Seam:** The padding color is slightly distinguishable
   from the source edge but remains visually acceptable and unobtrusive.
+- **CP1.1 Conservative Crop-Pad:** Crop-pad is not clearly necessary, but it remains
+  fully usable and does not materially reduce content or visual quality.
 
 ### Tier 2 - Suboptimal
 
@@ -92,6 +108,9 @@ The result is usable but noticeably weaker than a reasonable alternative.
   edges or creates an obvious pasted-on appearance without obscuring content.
 - **P2.3 Excessive or Imbalanced Padding:** Padding is noticeably large or uneven,
   making the layout feel poorly composed while content remains readable.
+- **CP2.1 Weak Crop-Pad Benefit:** The initial crop removes little useful margin or
+  the final padding remains unnecessarily large, so the combined operation is
+  noticeably weaker than an available direct crop or pad.
 
 ### Tier 3 - Significant
 
@@ -109,6 +128,8 @@ coherence, but the primary content remains partly usable.
   placement dominate the composition and substantially degrade the result.
 - **P3.3 Readability Reduction:** The padded composition makes important text or
   details difficult to inspect at thumbnail scale, though still partly readable.
+- **CP3.1 Harmful Pre-Padding Crop:** The initial crop removes meaningful content or
+  context before padding, materially degrading the final layout.
 
 ### Tier 4 - Critical
 
@@ -157,7 +178,7 @@ Return only one valid JSON object with this schema:
     "anchored_subject": "string"
   },
   "comparison": {
-    "layout_relationship": "cropped | padded | identical | distorted",
+    "layout_relationship": "cropped | cropped_and_padded | padded | identical | distorted",
     "critical_elements_lost_from_A": ["list"]
   },
   "evaluation": {

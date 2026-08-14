@@ -135,3 +135,33 @@ def test_judges_crop_and_pad_and_writes_stratified_reports(tmp_path, monkeypatch
     assert (tmp_path / "judge_details.parquet").is_file()
     assert (tmp_path / "judge_report.html").is_file()
     assert (tmp_path / "judge_report.md").is_file()
+
+    module.write_results(judged, summary, tmp_path, output_prefix="original_crop_judge")
+    module.render_markdown_report(
+        judged,
+        summary,
+        tmp_path,
+        output_prefix="original_crop_judge",
+        report_title="Original Crop Judge",
+    )
+    assert (tmp_path / "original_crop_judge_summary.json").is_file()
+    assert (tmp_path / "original_crop_judge_report.md").read_text().startswith("# Original Crop Judge")
+
+
+def test_summary_omits_mode_rates_when_rubric_does_not_return_them():
+    module = load_judge_module()
+    detail = make_detail("image__ratio_1", 1.0, "pad", "renders/candidates/pad.jpg")
+    detail.update(
+        judge_status="completed",
+        judge_label=0.0,
+        judge_reward=1.0,
+        judge_rules=["T0.1"],
+        judge_mode_appropriateness=None,
+        judge_layout_relationship=None,
+        judge_latency_ms=10.0,
+    )
+    summary = module.summarize_subset([detail])
+    assert summary["mode_appropriate_rate"] is None
+    assert summary["mode_inappropriate_rate"] is None
+    assert summary["mode_appropriateness_counts"] == {}
+    assert summary["layout_relationship_counts"] == {}

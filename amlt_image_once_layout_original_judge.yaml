@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
+description: Original crop rubric diagnostic on completed Qwen two-stage crop-or-pad layouts
+
+target:
+  service: manifold
+  name: Feeds
+  workspace_name: CS-NewsAndFeeds-Singularity
+
+storage:
+  blob_output:
+    storage_account_name: csnewsandfeeds4150361735
+    container_name: unium
+    mount_dir: /mnt/blob_output
+    is_output: true
+
+environment:
+  image: amlt-sing/acpt-torch2.8.x-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - python -m pip install uv
+    - uv python install 3.12
+    - uv venv --seed --python 3.12 .venv-original-crop-judge
+    - uv pip install --python .venv-original-crop-judge/bin/python -e projects/news_image_crop_benchmark --no-deps
+    - uv pip install --python .venv-original-crop-judge/bin/python "Pillow>=10" "pyarrow>=19" "openai>=2" "azure-identity>=1.17"
+
+code:
+  local_dir: $CONFIG_DIR
+
+jobs:
+  - name: original-crop-judge-v1
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: /subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895/resourceGroups/AMLStudio/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml
+    command: |
+      set -euo pipefail
+      RUN_ID=qwen35-layout-v1-edge-pad-original-crop-judge-v1-20260814
+      export LAYOUT_RESULTS_DIR=/mnt/blob_output/v-yukunban/crop-image-dataset/results/qwen35-layout-v1-edge-pad-20260813
+      test -f "$$LAYOUT_RESULTS_DIR/_LAYOUT_PIPELINE_COMPLETE.json"
+      test -f "$$LAYOUT_RESULTS_DIR/details.jsonl"
+      export CROP_VLM_TIMEOUT=45
+      export CROP_VLM_MAX_RETRIES=2
+      export CROP_VLM_FALLBACK_LABEL=5.0
+      export CROP_VLM_PARSE_FALLBACK_LABEL=2.5
+      export CROP_VLM_IMAGE_SIZE=384
+      export CROP_VLM_IMAGE_FORMAT=JPEG
+      export CROP_VLM_JPEG_QUALITY=70
+      export CROP_VLM_MAX_OUTPUT_TOKENS=1024
+      export CROP_VLM_REASONING_EFFORT=low
+      export CROP_VLM_OUTPUT_VERBOSITY=low
+      export CROP_VLM_PREPROCESS_MODE=letterbox
+      .venv-original-crop-judge/bin/python projects/news_image_crop_benchmark/scripts/judge_image_once_layout.py \
+        --layout-results-dir "$$LAYOUT_RESULTS_DIR" \
+        --vlm-prompt-path projects/news_image_crop_benchmark/config/crop_vlm_prompt.txt \
+        --judge-workers 2 \
+        --judge-id original_crop_judge_v1 \
+        --output-prefix original_crop_judge \
+        --response-log-name original_crop_judge_responses.jsonl \
+        --completion-name _ORIGINAL_CROP_JUDGE_COMPLETE.json \
+        --report-title "Original Crop Judge on Two-Stage Layouts" \
+        --omit-evaluation-context \
+        --run-id "$$RUN_ID"
+      .venv-original-crop-judge/bin/python -c 'import json, os, pathlib; p = pathlib.Path(os.environ["LAYOUT_RESULTS_DIR"]) / "_ORIGINAL_CROP_JUDGE_COMPLETE.json"; x = json.loads(p.read_text()); assert x["tasks"] == 480 and x["judge_completed_count"] + x["judge_failed_count"] + x["judge_parse_fallback_count"] == 480, x'
+      printf '%s\n' "$$LAYOUT_RESULTS_DIR" > "$$AMLT_OUTPUT_DIR/result_path.txt"
+      cp "$$LAYOUT_RESULTS_DIR/original_crop_judge_summary.json" "$$AMLT_OUTPUT_DIR/original_crop_judge_summary.json"
+      cp "$$LAYOUT_RESULTS_DIR/original_crop_judge_summary.csv" "$$AMLT_OUTPUT_DIR/original_crop_judge_summary.csv"
+      cp "$$LAYOUT_RESULTS_DIR/original_crop_judge_report.md" "$$AMLT_OUTPUT_DIR/original_crop_judge_report.md"
+      cp "$$LAYOUT_RESULTS_DIR/original_crop_judge_report.html" "$$AMLT_OUTPUT_DIR/original_crop_judge_report.html"
+      cp "$$LAYOUT_RESULTS_DIR/original_crop_judge_details.jsonl" "$$AMLT_OUTPUT_DIR/original_crop_judge_details.jsonl"
+      cp "$$LAYOUT_RESULTS_DIR/_ORIGINAL_CROP_JUDGE_COMPLETE.json" "$$AMLT_OUTPUT_DIR/_ORIGINAL_CROP_JUDGE_COMPLETE.json"

@@ -177,6 +177,44 @@ def test_percentage_retry_prompt_uses_public_percentage_fields():
     assert "<crop>" not in prompt
 
 
+def test_layout_retry_prompt_uses_unified_fields():
+    module = load_evaluator_module()
+    prompt = module.build_attempt_prompt(
+        "<image>\nReturn a layout.",
+        [{"parse_error": "invalid operation"}],
+        "layout-json-v1",
+    )
+
+    assert "operation is crop, crop_pad, or pad" in prompt
+    assert "four percentage coordinates" in prompt
+
+
+def test_unified_layout_candidate_renders_crop_then_pad(tmp_path):
+    module = load_evaluator_module()
+    image_path = tmp_path / "source.webp"
+    image_path.write_bytes(make_webp_payload())
+    task = {
+        "task_id": "image__ratio_1.91",
+        "image_path": str(image_path),
+        "target_ratio": 1.91,
+    }
+    action = {
+        "operation": "crop_pad",
+        "x1_pct": 10,
+        "y1_pct": 10,
+        "x2_pct": 90,
+        "y2_pct": 90,
+    }
+
+    path, metadata = module.render_unified_layout_candidate(task, action, tmp_path)
+
+    with Image.open(path) as candidate:
+        assert abs(candidate.width / candidate.height - 1.91) <= 1 / candidate.height
+    assert metadata["selected_operation"] == "crop_pad"
+    assert metadata["padding_fraction"] > 0
+    assert metadata["background_hex"].startswith("#")
+
+
 def test_judge_metadata_skips_unrelated_braces_before_valid_json():
     module = load_evaluator_module()
     metadata = module.parse_judge_metadata(
@@ -306,6 +344,70 @@ def test_generation_canonicalizes_bare_json_and_preserves_raw_response(tmp_path)
     assert attempt["response_normalized"]
     assert attempt["canonical_format"]
     assert not attempt["strict_format"]
+
+
+def test_generation_persists_unified_layout_action(tmp_path):
+    module = load_evaluator_module()
+
+    class FakeProcessor:
+        def apply_chat_template(self, messages, **_kwargs):
+            return messages[0]["content"][1]["text"]
+
+    class FakeAutoProcessor:
+        @staticmethod
+        def from_pretrained(_model_path, local_files_only):
+            assert local_files_only
+            return FakeProcessor()
+
+    class FakeSamplingParams:
+        def __init__(self, **_kwargs):
+            pass
+
+    class FakeLLM:
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate(self, requests, sampling_params):
+            response = (
+                '{"operation":"crop_pad","x1_pct":5,"y1_pct":10,'
+                '"x2_pct":95,"y2_pct":90}'
+            )
+            return [SimpleNamespace(outputs=[SimpleNamespace(text=response)]) for _ in requests]
+
+    image_path = tmp_path / "image.webp"
+    image_path.write_bytes(make_webp_payload())
+    task = {
+        "task_id": "image__ratio_1.91",
+        "prompt": "<image>\nCreate a layout",
+        "image_path": str(image_path),
+    }
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoProcessor = FakeAutoProcessor
+    fake_vllm = types.ModuleType("vllm")
+    fake_vllm.LLM = FakeLLM
+    fake_vllm.SamplingParams = FakeSamplingParams
+    args = make_args()
+    args.action_protocol = "layout-json-v1"
+
+    with patch.dict(sys.modules, {"transformers": fake_transformers, "vllm": fake_vllm}):
+        module.run_generation_worker(
+            rank=0,
+            gpu_devices=["0"],
+            tasks=[task],
+            output_dir=tmp_path,
+            model_path=tmp_path / "model",
+            args=args,
+        )
+
+    progress = json.loads(module.generation_progress_path(tmp_path, task["task_id"]).read_text())
+    assert progress["status"] == "valid"
+    assert progress["action"] == {
+        "operation": "crop_pad",
+        "x1_pct": 5,
+        "y1_pct": 10,
+        "x2_pct": 95,
+        "y2_pct": 90,
+    }
 
 
 def test_generation_marks_retry_exhausted_after_configured_attempt_limit(tmp_path):

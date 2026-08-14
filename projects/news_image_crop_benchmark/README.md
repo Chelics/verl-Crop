@@ -128,6 +128,37 @@ The conversion and rewrite reports include the effective policy prompt SHA-256. 
 `TRAIN_FILE` and `TEST_FILE` at the versioned outputs when launching GRPO; changing a template file
 does not alter prompts already stored in Parquet.
 
+## Unified Layout Policy
+
+The unified layout policy makes crop, crop-then-pad, and full-image padding a
+single model decision. Its prompt is
+`config/policy_prompts/v3_unified_layout.txt`, and the strict action schema is:
+
+```json
+{"operation":"crop_pad","x1_pct":3,"y1_pct":12,"x2_pct":97,"y2_pct":88}
+```
+
+`operation` is `crop`, `crop_pad`, or `pad`. For `crop`, the renderer places the
+largest requested-aspect-ratio rectangle inside the selected source rectangle.
+For `crop_pad`, it retains the selected rectangle exactly and then pads it to the
+requested ratio. For `pad`, the action must use the full source rectangle. The
+renderer never stretches source pixels and chooses padding color from the source
+edge median.
+
+The frozen Qwen3.5-9B base uses the existing resumable image-once evaluator with
+`--action-protocol layout-json-v1` and the final-layout rubric in
+`config/layout_vlm_prompt.txt`. AMLT entrypoints are:
+
+```text
+amlt_unified_layout_base_preflight.yaml  4 images / 16 tasks
+amlt_unified_layout_base_full.yaml       120 images / 480 tasks
+amlt_unified_layout_base_resume.yaml     Judge-only recovery from persisted progress
+```
+
+All later SFT and GRPO evaluations must keep this prompt, action protocol,
+renderer, test manifest, sampling configuration, and Layout Judge fixed when
+comparing against the base.
+
 ## Mode-Only Crop-or-Pad Diagnosis
 
 `scripts/evaluate_image_once_mode.py` is a standalone zero-shot diagnostic that runs before any crop
@@ -223,6 +254,48 @@ Pass `--share` to create a temporary Gradio link. For a shared link, set both
 `GRADIO_AUTH_USERNAME` and `GRADIO_AUTH_PASSWORD` in the launch terminal to require basic login.
 Add `--single-result` when sharing to expose only the selected result directory rather than its
 sibling experiments. The viewer reads metadata once and only resolves images for the current sample.
+
+To browse the rendered rows in `cropped.parquet`, mount the dataset directory and start the dedicated
+dataset viewer. The source file has one large image row group, so the first launch streams it once and
+creates compressed local previews; later launches reuse that cache.
+
+```powershell
+rclone mount `
+  ":azureblob,account=csnewsandfeeds4150361735,use_az=true:unium/v-yukunban/crop-image-dataset" `
+  T: --read-only --links --vfs-cache-mode full --dir-cache-time 5m
+
+.venv-viewer\Scripts\python.exe projects/news_image_crop_benchmark/scripts/render_cropped_overrides.py `
+  --train T:\image_once_train.parquet `
+  --manifest projects/news_image_crop_benchmark/config/cropped_overrides/v1.jsonl `
+  --output-dir "$env:LOCALAPPDATA\news-crop-benchmark\cropped-overrides\v1"
+
+.venv-viewer\Scripts\python.exe projects/news_image_crop_benchmark/scripts/serve_cropped_dataset.py `
+  --data T:\cropped.parquet `
+  --override-dir "$env:LOCALAPPDATA\news-crop-benchmark\cropped-overrides\v1"
+```
+
+Merge reviewed rows from a `manual_crops.parquet` export into a new dataset without replacing the
+baseline. The merger selects the newest ratio-valid save for each `(image_id, ratio)`, preserves the
+baseline schema, verifies every untouched row, and writes a JSON audit report next to the output.
+
+```powershell
+.venv-viewer\Scripts\python.exe projects/news_image_crop_benchmark/scripts/merge_manual_crops.py `
+  --base T:\cropped.parquet `
+  --manual "$env:USERPROFILE\Downloads\manual_crops.parquet" `
+  --output "$env:USERPROFILE\Downloads\cropped_v2.parquet" `
+  --row-group-size 64
+
+amlt storage upload -c amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output `
+  "$env:USERPROFILE\Downloads\cropped_v2.parquet" `
+  v-yukunban/crop-image-dataset/cropped_v2.parquet
+
+.venv-viewer\Scripts\python.exe projects/news_image_crop_benchmark/scripts/serve_cropped_dataset.py `
+  --data "$env:USERPROFILE\Downloads\cropped_v2.parquet" `
+  --reason-prefix "[manual replacement]" `
+  --server-port 7867
+```
+
+Do not overwrite `cropped.parquet`; consumers should opt in to the versioned v2 path explicitly.
 
 ## Image-Once Zero-Shot Evaluation
 

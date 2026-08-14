@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from news_crop_benchmark.layout import edge_median_color, pad_image_to_ratio
+from news_crop_benchmark.layout import edge_median_color, pad_image_to_ratio, render_layout_action
+from news_crop_benchmark.protocol import LayoutAction
 
 
 def test_edge_median_color_ignores_sparse_border_marks():
@@ -51,3 +52,54 @@ def test_padding_rejects_invalid_ratio(target_ratio):
 def test_padding_rejects_invalid_background_color():
     with pytest.raises(ValueError, match="background_color"):
         pad_image_to_ratio(Image.new("RGB", (10, 10)), 1.0, background_color=(0, 0, 256))
+
+
+def test_unified_crop_renders_exact_target_ratio():
+    source = Image.new("RGB", (200, 100), color="white")
+    action = LayoutAction("crop", 10, 10, 90, 90)
+
+    result = render_layout_action(source, action, 1.0)
+
+    assert result.operation == "crop"
+    assert result.image.width == result.image.height
+    assert result.background_color is None
+    assert result.padding_fraction == 0.0
+
+
+def test_unified_crop_pad_crops_before_padding_without_resizing():
+    source = Image.new("RGB", (200, 100), color=(240, 240, 240))
+    source.paste((20, 80, 120), (50, 10, 150, 90))
+    action = LayoutAction("crop_pad", 25, 10, 75, 90)
+
+    result = render_layout_action(source, action, 1.91)
+    cropped = source.crop((50, 10, 150, 90))
+
+    assert result.operation == "crop_pad"
+    assert result.source_box == (50, 10, 150, 90)
+    assert result.image.crop(result.content_box).tobytes() == cropped.tobytes()
+    assert abs(result.image.width / result.image.height - 1.91) <= 1 / result.image.height
+    assert result.padding_fraction > 0.0
+
+
+def test_unified_pad_uses_full_source_and_can_be_noop():
+    source = Image.new("RGB", (100, 100), color=(10, 20, 30))
+    action = LayoutAction("pad", 0, 0, 100, 100)
+
+    result = render_layout_action(source, action, 1.0)
+
+    assert result.source_box == (0, 0, 100, 100)
+    assert result.content_box == (0, 0, 100, 100)
+    assert result.image.tobytes() == source.tobytes()
+    assert result.padding_fraction == 0.0
+
+
+def test_unified_crop_never_expands_outside_selected_rectangle():
+    source = Image.new("RGB", (200, 100), color="white")
+    action = LayoutAction("crop", 0, 0, 50, 50)
+
+    result = render_layout_action(source, action, 2.0)
+
+    left, top, right, bottom = result.source_box
+    assert 0 <= left < right <= 100
+    assert 0 <= top < bottom <= 50
+    assert result.source_box == (0, 0, 100, 50)

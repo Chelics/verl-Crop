@@ -60,8 +60,12 @@ def load_layout_details(layout_results_dir: Path) -> list[dict[str, Any]]:
     return details
 
 
-def judge_progress_path(layout_results_dir: Path, task_id: str) -> Path:
-    return layout_results_dir / "progress" / "layout_judge_v1" / f"{task_id}.json"
+def judge_progress_path(
+    layout_results_dir: Path,
+    task_id: str,
+    judge_id: str = "layout_judge_v1",
+) -> Path:
+    return layout_results_dir / "progress" / judge_id / f"{task_id}.json"
 
 
 def parse_judge_metadata(output_text: str | None) -> dict[str, Any]:
@@ -102,15 +106,15 @@ def run_judge(
     layout_results_dir: Path,
     prompt_path: Path,
     judge_workers: int,
+    judge_id: str = "layout_judge_v1",
+    response_log_name: str = "layout_judge_responses.jsonl",
+    include_evaluation_context: bool = True,
 ) -> None:
-    os.environ.setdefault(
-        "CROP_VLM_LOG_PATH",
-        str(layout_results_dir / "layout_judge_responses.jsonl"),
-    )
+    os.environ["CROP_VLM_LOG_PATH"] = str(layout_results_dir / response_log_name)
     thread_state = threading.local()
 
     def score_task(detail: dict[str, Any]) -> None:
-        progress_path = judge_progress_path(layout_results_dir, detail["task_id"])
+        progress_path = judge_progress_path(layout_results_dir, detail["task_id"], judge_id)
         if progress_path.exists():
             try:
                 existing = json.loads(progress_path.read_text(encoding="utf-8"))
@@ -126,6 +130,21 @@ def run_judge(
             candidate = source.convert("RGB")
         if not hasattr(thread_state, "scorer"):
             thread_state.scorer = CropVLMScorer(str(prompt_path))
+        evaluation_context = {
+            "target_ratio": detail["target_ratio"],
+            "selected_mode": detail["predicted_mode"],
+            "background_hex": detail.get("background_hex"),
+            "padding_fraction": detail.get("padding_fraction"),
+            "crop_action": (
+                {
+                    "cx_pct": detail.get("cx_pct"),
+                    "cy_pct": detail.get("cy_pct"),
+                    "area_pct": detail.get("area_pct"),
+                }
+                if detail["predicted_mode"] == "crop"
+                else None
+            ),
+        }
         result = thread_state.scorer.score_detailed(
             original,
             candidate,
@@ -137,21 +156,7 @@ def run_judge(
                 "target_ratio": detail["target_ratio"],
                 "selected_mode": detail["predicted_mode"],
             },
-            evaluation_context={
-                "target_ratio": detail["target_ratio"],
-                "selected_mode": detail["predicted_mode"],
-                "background_hex": detail.get("background_hex"),
-                "padding_fraction": detail.get("padding_fraction"),
-                "crop_action": (
-                    {
-                        "cx_pct": detail.get("cx_pct"),
-                        "cy_pct": detail.get("cy_pct"),
-                        "area_pct": detail.get("area_pct"),
-                    }
-                    if detail["predicted_mode"] == "crop"
-                    else None
-                ),
-            },
+            evaluation_context=evaluation_context if include_evaluation_context else None,
         )
         original.close()
         candidate.close()
@@ -178,11 +183,12 @@ def run_judge(
 def build_judged_details(
     details: Sequence[dict[str, Any]],
     layout_results_dir: Path,
+    judge_id: str = "layout_judge_v1",
 ) -> list[dict[str, Any]]:
     judged = []
     for detail in details:
         judge = json.loads(
-            judge_progress_path(layout_results_dir, detail["task_id"]).read_text(encoding="utf-8")
+            judge_progress_path(layout_results_dir, detail["task_id"], judge_id).read_text(encoding="utf-8")
         )
         judged.append(
             {
@@ -221,10 +227,10 @@ def summarize_subset(details: Sequence[dict[str, Any]]) -> dict[str, Any]:
     latencies = [float(detail["judge_latency_ms"]) for detail in counted]
     tier_counts = Counter(str(int(label)) if label.is_integer() else str(label) for label in labels)
     rule_counts = Counter(rule for detail in counted for rule in detail["judge_rules"])
-    appropriateness_counts = Counter(
-        str(detail["judge_mode_appropriateness"]) for detail in counted
-    )
-    relationship_counts = Counter(str(detail["judge_layout_relationship"]) for detail in counted)
+    appropriateness = [detail for detail in counted if detail["judge_mode_appropriateness"] is not None]
+    relationships = [detail for detail in counted if detail["judge_layout_relationship"] is not None]
+    appropriateness_counts = Counter(str(detail["judge_mode_appropriateness"]) for detail in appropriateness)
+    relationship_counts = Counter(str(detail["judge_layout_relationship"]) for detail in relationships)
     return {
         "tasks": len(details),
         "judge_completed_count": len(counted),
@@ -242,13 +248,13 @@ def summarize_subset(details: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "tier_0_1_acceptable_rate": mean(label <= 1 for label in labels) if labels else None,
         "tier_3_5_severe_rate": mean(label >= 3 for label in labels) if labels else None,
         "mode_appropriate_rate": (
-            mean(detail["judge_mode_appropriateness"] == "appropriate" for detail in counted)
-            if counted
+            mean(detail["judge_mode_appropriateness"] == "appropriate" for detail in appropriateness)
+            if appropriateness
             else None
         ),
         "mode_inappropriate_rate": (
-            mean(detail["judge_mode_appropriateness"] == "inappropriate" for detail in counted)
-            if counted
+            mean(detail["judge_mode_appropriateness"] == "inappropriate" for detail in appropriateness)
+            if appropriateness
             else None
         ),
         "judge_latency_ms_mean": mean(latencies) if latencies else None,
@@ -290,9 +296,10 @@ def write_results(
     details: list[dict[str, Any]],
     summary: dict[str, Any],
     layout_results_dir: Path,
+    output_prefix: str = "judge",
 ) -> None:
     details.sort(key=lambda detail: (detail["source_index"], TARGET_RATIOS.index(detail["target_ratio"])))
-    (layout_results_dir / "judge_details.jsonl").write_text(
+    (layout_results_dir / f"{output_prefix}_details.jsonl").write_text(
         "".join(json.dumps(detail, ensure_ascii=False, sort_keys=True) + "\n" for detail in details),
         encoding="utf-8",
     )
@@ -307,14 +314,14 @@ def write_results(
     ]
     pq.write_table(
         pa.Table.from_pylist(parquet_rows),
-        layout_results_dir / "judge_details.parquet",
+        layout_results_dir / f"{output_prefix}_details.parquet",
         compression="zstd",
     )
-    (layout_results_dir / "judge_summary.json").write_text(
+    (layout_results_dir / f"{output_prefix}_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    with (layout_results_dir / "judge_summary.csv").open(
+    with (layout_results_dir / f"{output_prefix}_summary.csv").open(
         "w", newline="", encoding="utf-8-sig"
     ) as output:
         rows = [("overall", summary["overall"])]
@@ -347,6 +354,8 @@ def render_html_report(
     details: list[dict[str, Any]],
     summary: dict[str, Any],
     layout_results_dir: Path,
+    output_prefix: str = "judge",
+    report_title: str = "Crop-or-Pad Layout Judge",
 ) -> None:
     by_image: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for detail in details:
@@ -393,27 +402,29 @@ def render_html_report(
         )
     document = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Crop-or-Pad Layout Judge</title><style>
+<title>{html.escape(report_title)}</title><style>
 :root {{ --ink:#202522; --line:#ccd4cf; --paper:#edf1ee; --crop:#176b4d; --pad:#9a5418; }} * {{ box-sizing:border-box; }}
 body {{ margin:0; color:var(--ink); background:var(--paper); font-family:"Segoe UI",sans-serif; }} main {{ width:min(1640px,96vw); margin:auto; padding:24px 0 64px; }}
 .summary,.sample {{ background:white; border:1px solid var(--line); padding:20px; margin-bottom:20px; }} table {{ border-collapse:collapse; width:min(1000px,100%); margin-bottom:24px; }} th,td {{ border-bottom:1px solid var(--line); padding:7px 10px; text-align:left; }}
 .layout {{ display:grid; grid-template-columns:minmax(260px,.8fr) minmax(0,2.2fr); gap:18px; }} .candidates {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }}
 .candidate {{ border:1px solid var(--line); border-top:5px solid var(--line); padding:12px; }} .candidate.crop {{ border-top-color:var(--crop); }} .candidate.pad {{ border-top-color:var(--pad); }} img {{ display:block; width:100%; max-height:540px; object-fit:contain; background:#e6ebe8; }} .candidate img {{ height:340px; }}
 .tier {{ font-size:18px; font-weight:700; }} p,pre {{ overflow-wrap:anywhere; }} pre {{ white-space:pre-wrap; font-size:12px; }} @media(max-width:900px) {{ .layout {{ grid-template-columns:1fr; }} .candidates {{ grid-template-columns:1fr; }} }}
-</style></head><body><main><section class="summary"><h1>Crop-or-Pad Layout Judge</h1><table>{metric_rows}</table>
+</style></head><body><main><section class="summary"><h1>{html.escape(report_title)}</h1><table>{metric_rows}</table>
 <h2>By Mode</h2><table><tr><th>Mode</th><th>Tasks</th><th>Mean Tier</th><th>Tier 0-1</th><th>Tier 3-5</th><th>Appropriate</th><th>Inappropriate</th></tr>{mode_rows}</table></section>
 {''.join(sections)}</main></body></html>"""
-    (layout_results_dir / "judge_report.html").write_text(document, encoding="utf-8")
+    (layout_results_dir / f"{output_prefix}_report.html").write_text(document, encoding="utf-8")
 
 
 def render_markdown_report(
     details: list[dict[str, Any]],
     summary: dict[str, Any],
     layout_results_dir: Path,
+    output_prefix: str = "judge",
+    report_title: str = "Crop-or-Pad Layout Judge",
 ) -> None:
     overall = summary["overall"]
     lines = [
-        "# Crop-or-Pad Layout Judge",
+        f"# {report_title}",
         "",
         "## Overall",
         "",
@@ -469,7 +480,7 @@ def render_markdown_report(
     lines.extend(["", "## Most Frequent Rules", "", "| Rule | Count |", "|---|---:|"])
     for rule, count in sorted(overall["rule_counts"].items(), key=lambda item: (-item[1], item[0])):
         lines.append(f"| `{rule}` | {count} |")
-    (layout_results_dir / "judge_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (layout_results_dir / f"{output_prefix}_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
@@ -478,9 +489,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vlm-prompt-path", type=Path, required=True)
     parser.add_argument("--judge-workers", type=int, default=2)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--judge-id", default="layout_judge_v1")
+    parser.add_argument("--output-prefix", default="judge")
+    parser.add_argument("--response-log-name", default="layout_judge_responses.jsonl")
+    parser.add_argument("--completion-name", default="_LAYOUT_JUDGE_COMPLETE.json")
+    parser.add_argument("--report-title", default="Crop-or-Pad Layout Judge")
+    parser.add_argument("--omit-evaluation-context", action="store_true")
     args = parser.parse_args()
     if args.judge_workers <= 0:
         raise ValueError("judge-workers must be positive")
+    safe_name = re.compile(r"^[A-Za-z0-9_.-]+$")
+    for name, value in (
+        ("judge-id", args.judge_id),
+        ("output-prefix", args.output_prefix),
+        ("response-log-name", args.response_log_name),
+        ("completion-name", args.completion_name),
+    ):
+        if not safe_name.fullmatch(value):
+            raise ValueError(f"{name} contains unsupported characters")
     return args
 
 
@@ -492,8 +518,16 @@ def main() -> None:
         raise FileNotFoundError(args.vlm_prompt_path)
     layout_results_dir = args.layout_results_dir.resolve()
     details = load_layout_details(layout_results_dir)
-    run_judge(details, layout_results_dir, args.vlm_prompt_path, args.judge_workers)
-    judged_details = build_judged_details(details, layout_results_dir)
+    run_judge(
+        details,
+        layout_results_dir,
+        args.vlm_prompt_path,
+        args.judge_workers,
+        judge_id=args.judge_id,
+        response_log_name=args.response_log_name,
+        include_evaluation_context=not args.omit_evaluation_context,
+    )
+    judged_details = build_judged_details(details, layout_results_dir, judge_id=args.judge_id)
     summary = {
         "run_id": args.run_id,
         "layout_results_dir": str(layout_results_dir),
@@ -502,13 +536,27 @@ def main() -> None:
             "CROP_VLM_MODEL",
             os.getenv("GPT5_AZURE_OPENAI_DEPLOYMENT", "gpt-5.6-sol"),
         ),
+        "judge_id": args.judge_id,
+        "evaluation_context_included": not args.omit_evaluation_context,
         **summarize(judged_details),
     }
-    write_results(judged_details, summary, layout_results_dir)
-    render_html_report(judged_details, summary, layout_results_dir)
-    render_markdown_report(judged_details, summary, layout_results_dir)
+    write_results(judged_details, summary, layout_results_dir, output_prefix=args.output_prefix)
+    render_html_report(
+        judged_details,
+        summary,
+        layout_results_dir,
+        output_prefix=args.output_prefix,
+        report_title=args.report_title,
+    )
+    render_markdown_report(
+        judged_details,
+        summary,
+        layout_results_dir,
+        output_prefix=args.output_prefix,
+        report_title=args.report_title,
+    )
     write_json_atomic(
-        layout_results_dir / "_LAYOUT_JUDGE_COMPLETE.json",
+        layout_results_dir / args.completion_name,
         {
             "run_id": args.run_id,
             "tasks": len(judged_details),

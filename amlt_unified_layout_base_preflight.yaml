@@ -1,0 +1,104 @@
+# yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
+# ^ Update with: amlt schema add <file>  |  VS Code: Run Task > amlt
+# Amulet config file. Docs: https://amulet-docs.azurewebsites.net/config_file.html
+# Fill in all <placeholder> values before submitting.
+description: Frozen Qwen3.5-9B unified crop/crop-pad/pad layout base preflight
+
+target:
+  service: manifold  # run "amlt target list manifold" to see available targets
+  name: Feeds
+  workspace_name: CS-NewsAndFeeds-Singularity  # the Singularity workspace to submit to
+
+storage:
+  blob_output:
+    storage_account_name: csnewsandfeeds4150361735
+    container_name: unium
+    mount_dir: /mnt/blob_output
+    is_output: true
+
+# REQUIRED: Docker environment
+# Manifold jobs authenticate to Azure (storage, ACR) via a User-Assigned
+# Managed Identity, auto-detected from the workspace in most cases. Only set
+# _AZUREML_SINGULARITY_JOB_UAI in 'env' below if auto-detection is ambiguous
+# (multiple non-primary identities); run 'amlt run' to see the available list.
+environment:
+  image: amlt-sing/acpt-torch2.8.x-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - python -m pip install uv
+    - uv python install 3.12
+    - uv venv --seed --python 3.12 .venv-qwen35
+    - uv pip install --python .venv-qwen35/bin/python "vllm==0.24.0"
+    - uv pip install --python .venv-qwen35/bin/python -e .
+    - uv pip install --python .venv-qwen35/bin/python -e "projects/news_image_crop_benchmark[data,train,test,vlm]"
+    - uv pip uninstall --python .venv-qwen35/bin/python opencv-python
+    - uv pip install --python .venv-qwen35/bin/python --reinstall opencv-python-headless
+
+# REQUIRED: code to run. Set local_dir to your code directory � it must
+# exist and be non-empty. $CONFIG_DIR = directory of this file; the default
+# $CONFIG_DIR/src means: put your code in a 'src' folder next to this file.
+code:
+  local_dir: $CONFIG_DIR
+
+# REQUIRED: Jobs to run. SKU examples: C1 (1 CPU), G1 (1 GPU), G4 (4 GPUs), G8-V100 (8 V100s)
+# Commands run from the uploaded code directory (code.local_dir).
+# 'command' is a shell script block (|): one line per step, e.g. python train.py --lr 0.01
+# Write outputs to $AMLT_OUTPUT_DIR for retrieval with 'amlt results'.
+# Use $$VAR to pass env vars literally ($VAR is interpolated at submission time).
+jobs:
+  - name: unified-layout-base-preflight
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: /subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895/resourcegroups/AMLStudio/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml
+    command: |
+      set -euo pipefail
+      DATA_PATH=/mnt/blob_output/v-yukunban/crop-image-dataset/image_once_test.parquet
+      MODEL_PATH=/mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B
+      RUN_ID=qwen35-unified-layout-base-preflight-v2-20260813
+      OUTPUT_DIR=/mnt/blob_output/v-yukunban/crop-image-dataset/results/$$RUN_ID
+      test -f "$$DATA_PATH"
+      test -d "$$MODEL_PATH"
+      export CROP_VLM_LOG_PATH="$$OUTPUT_DIR/judge_responses.jsonl"
+      export CROP_VLM_TIMEOUT=45
+      export CROP_VLM_MAX_RETRIES=2
+      export CROP_VLM_FALLBACK_LABEL=5.0
+      export CROP_VLM_PARSE_FALLBACK_LABEL=2.5
+      export CROP_VLM_IMAGE_SIZE=384
+      export CROP_VLM_IMAGE_FORMAT=JPEG
+      export CROP_VLM_JPEG_QUALITY=70
+      export CROP_VLM_MAX_OUTPUT_TOKENS=1024
+      export CROP_VLM_REASONING_EFFORT=low
+      export CROP_VLM_OUTPUT_VERBOSITY=low
+      export CROP_VLM_PREPROCESS_MODE=letterbox
+      export GPT5_AZURE_MANAGED_IDENTITY_CLIENT_ID=e6162a0d-e540-4454-995f-30bcb97f35b4
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_image_once_vlm.py \
+        --model "$$MODEL_PATH" \
+        --model-family qwen35 \
+        --model-name Qwen3.5-9B-Unified-Layout-Base \
+        --data "$$DATA_PATH" \
+        --policy-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v3_unified_layout.txt \
+        --action-protocol layout-json-v1 \
+        --vlm-prompt-path projects/news_image_crop_benchmark/config/layout_vlm_prompt.txt \
+        --output-dir "$$OUTPUT_DIR" \
+        --max-images 4 \
+        --max-attempts 10 \
+        --seed 42 \
+        --temperature 0.7 \
+        --top-p 0.95 \
+        --data-parallel-size 1 \
+        --tensor-parallel-size 1 \
+        --prompt-batch-size 4 \
+        --max-num-seqs 4 \
+        --judge-workers 1 \
+        --run-id "$$RUN_ID" \
+        --resume
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/check_eval_gate.py \
+        --summary "$$OUTPUT_DIR/summary.json" \
+        --expected-tasks 16
+      printf '%s\n' "$$OUTPUT_DIR" > "$$AMLT_OUTPUT_DIR/result_path.txt"
+      cp "$$OUTPUT_DIR/summary.json" "$$AMLT_OUTPUT_DIR/summary.json"
+      cp "$$OUTPUT_DIR/report.md" "$$AMLT_OUTPUT_DIR/report.md"
+      cp "$$OUTPUT_DIR/_EVAL_COMPLETE.json" "$$AMLT_OUTPUT_DIR/_EVAL_COMPLETE.json"
+

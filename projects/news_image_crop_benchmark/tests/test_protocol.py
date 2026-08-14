@@ -3,6 +3,7 @@ import unittest
 from news_crop_benchmark.protocol import (
     parse_crop_action,
     parse_crop_action_with_format,
+    parse_layout_action,
     parse_mode_decision,
     parse_percent_crop_action,
 )
@@ -94,6 +95,34 @@ class CropProtocolTests(unittest.TestCase):
             parse_percent_crop_action('{"cx_pct": 101, "cy_pct": 60, "area_pct": 25}')
         with self.assertRaisesRegex(ValueError, "must be integers"):
             parse_percent_crop_action('{"cx_pct": 45.5, "cy_pct": 60, "area_pct": 25}')
+
+    def test_parses_unified_layout_actions(self):
+        result = parse_layout_action(
+            '{"operation":"crop_pad","x1_pct":3,"y1_pct":12,"x2_pct":97,"y2_pct":88}'
+        )
+
+        self.assertEqual(result.action.operation, "crop_pad")
+        self.assertEqual(result.action.x1_pct, 3)
+        self.assertTrue(result.strict_format)
+
+    def test_layout_action_recovers_one_json_code_block(self):
+        result = parse_layout_action(
+            '```json\n{"operation":"crop","x1_pct":0,"y1_pct":10,"x2_pct":100,"y2_pct":90}\n```'
+        )
+
+        self.assertEqual(result.action.operation, "crop")
+        self.assertFalse(result.strict_format)
+
+    def test_rejects_invalid_layout_actions(self):
+        invalid_responses = (
+            '{"operation":"pad","x1_pct":0,"y1_pct":1,"x2_pct":100,"y2_pct":100}',
+            '{"operation":"crop_pad","x1_pct":30,"y1_pct":0,"x2_pct":20,"y2_pct":100}',
+            '{"operation":"fit","x1_pct":0,"y1_pct":0,"x2_pct":100,"y2_pct":100}',
+            '{"operation":"crop","x1_pct":0.5,"y1_pct":0,"x2_pct":100,"y2_pct":100}',
+        )
+        for response in invalid_responses:
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                parse_layout_action(response)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,46 @@
+<image>
+News title: {title}
+Target aspect ratio (width / height): {target_ratio}
+
+Create an editorial layout that makes the visually present subject of the news
+title clear while preserving the content needed to understand the image. Use the
+title only to identify relevant content that is actually visible.
+
+Choose exactly one operation:
+
+- "crop": remove low-value peripheral content and fill the target aspect ratio.
+- "crop_pad": first remove low-value outer content, then add background outside
+  the retained region when a direct target-ratio crop would remove important
+  content or make the composition too tight.
+- "pad": retain the complete source image and add background outside it. Use this
+  only when removing any source content would damage the subject, relationship,
+  text, data, diagram, map, screenshot, or other necessary information.
+
+For crop and crop_pad, select the source-image rectangle that may be retained.
+For crop, the renderer places the largest target-aspect-ratio rectangle inside
+your selected rectangle, so include enough natural margin and do not place
+important content near its edges. For crop_pad, the selected rectangle is retained
+exactly before padding. For pad, use the complete rectangle 0, 0, 100, 100. Preserve faces, identity,
+meaningful actions and interactions, held objects that matter to the story, and
+the context required to understand the event. For charts, maps, diagrams,
+posters, documents, screenshots, and product labels, preserve all content-bearing
+text, labels, legends, axes, data, and structural sections. Empty margins,
+decorative borders, repetitive background, and unrelated edge clutter may be
+removed.
+
+Evaluate this target aspect ratio independently. Prefer crop_pad over pad when
+removing low-value outer content would make the final padded subject meaningfully
+larger or better focused. Never stretch, rotate, or distort the image.
+
+Return exactly one JSON object with exactly five fields:
+{"operation":"crop_pad","x1_pct":X1,"y1_pct":Y1,"x2_pct":X2,"y2_pct":Y2}
+
+operation must be "crop", "crop_pad", or "pad".
+x1_pct and x2_pct are the retained rectangle's left and right edges as integer
+percentages from 0 to 100. y1_pct and y2_pct are its top and bottom edges.
+The lower bounds must be smaller than the upper bounds. For pad, return exactly
+x1_pct=0, y1_pct=0, x2_pct=100, y2_pct=100.
+
+The renderer applies the requested output ratio and background automatically.
+Do not output pixel coordinates, Markdown, explanations, confidence, or any
+additional fields.

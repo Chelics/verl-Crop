@@ -25,11 +25,17 @@ from PIL import Image, ImageOps
 
 from news_crop_benchmark.data import build_prompt, load_policy_prompt_template
 from news_crop_benchmark.geometry import TARGET_RATIOS, CropAction, action_to_bbox
+from news_crop_benchmark.layout import render_layout_action
 from news_crop_benchmark.policy_model_adapter import (
     MODEL_FAMILIES,
     PolicyModelAdapter,
 )
-from news_crop_benchmark.protocol import parse_crop_action_with_format, parse_percent_crop_action
+from news_crop_benchmark.protocol import (
+    LayoutAction,
+    parse_crop_action_with_format,
+    parse_layout_action,
+    parse_percent_crop_action,
+)
 from news_crop_benchmark.proxy_scorer import crop_image
 from news_crop_benchmark.vlm_scorer import CropVLMScorer
 
@@ -245,7 +251,13 @@ def build_attempt_prompt(
         return base_prompt
     previous = previous_attempts[-1]
     error = str(previous.get("parse_error") or "output did not satisfy the required crop protocol")
-    if action_protocol == "percent-json-v1":
+    if action_protocol == "layout-json-v1":
+        requirements = (
+            "Generate a new answer containing only one JSON object. Recheck that operation is crop, "
+            "crop_pad, or pad; all four percentage coordinates are integers in [0, 100]; lower bounds "
+            "are smaller than upper bounds; pad uses exactly [0, 0, 100, 100]; and there are no other fields."
+        )
+    elif action_protocol == "percent-json-v1":
         requirements = (
             "Generate a new answer containing only one JSON object. Recheck that cx_pct and cy_pct "
             "are integers in [0, 100], area_pct is an integer in [1, 100], and there are no other fields."
@@ -378,7 +390,9 @@ def run_generation_worker(
                         "parse_error": None,
                     }
                     try:
-                        if args.action_protocol == "percent-json-v1":
+                        if args.action_protocol == "layout-json-v1":
+                            parse_result = parse_layout_action(response)
+                        elif args.action_protocol == "percent-json-v1":
                             parse_result = parse_percent_crop_action(response)
                         else:
                             parse_result = parse_crop_action_with_format(canonical_response)
@@ -404,11 +418,27 @@ def run_generation_worker(
                     attempt_record["valid"] = True
                     attempt_record["strict_format"] = parse_result.strict_format and not response_normalized
                     attempt_record["canonical_format"] = (
-                        True if args.action_protocol == "percent-json-v1" else parse_result.strict_format
+                        True
+                        if args.action_protocol in {"percent-json-v1", "layout-json-v1"}
+                        else parse_result.strict_format
                     )
-                    if args.action_protocol == "percent-json-v1" and not parse_result.strict_format:
+                    if args.action_protocol in {"percent-json-v1", "layout-json-v1"} and not parse_result.strict_format:
                         attempt_record["response_normalized"] = True
                     attempts[current_task_id].append(attempt_record)
+                    if args.action_protocol == "layout-json-v1":
+                        serialized_action = {
+                            "operation": action.operation,
+                            "x1_pct": action.x1_pct,
+                            "y1_pct": action.y1_pct,
+                            "x2_pct": action.x2_pct,
+                            "y2_pct": action.y2_pct,
+                        }
+                    else:
+                        serialized_action = {
+                            "cx": action.center_x,
+                            "cy": action.center_y,
+                            "area": action.area,
+                        }
                     write_json_atomic(
                         generation_progress_path(output_dir, current_task_id),
                         {
@@ -416,11 +446,7 @@ def run_generation_worker(
                             "rank": rank,
                             "status": "valid",
                             "attempts": attempts[current_task_id],
-                            "action": {
-                                "cx": action.center_x,
-                                "cy": action.center_y,
-                                "area": action.area,
-                            },
+                            "action": serialized_action,
                         },
                     )
                     active.pop(current_task_id)
@@ -511,6 +537,47 @@ def render_candidate(task: dict[str, Any], action: dict[str, float], output_dir:
     return output_path
 
 
+def render_unified_layout_candidate(
+    task: dict[str, Any],
+    action: dict[str, Any],
+    output_dir: Path,
+) -> tuple[Path, dict[str, Any]]:
+    output_path = output_dir / "renders" / "candidates" / f"{task['task_id']}.jpg"
+    layout_action = LayoutAction(
+        operation=str(action["operation"]),
+        x1_pct=int(action["x1_pct"]),
+        y1_pct=int(action["y1_pct"]),
+        x2_pct=int(action["x2_pct"]),
+        y2_pct=int(action["y2_pct"]),
+    )
+    with Image.open(task["image_path"]) as source:
+        original = ImageOps.exif_transpose(source).convert("RGB")
+    try:
+        rendered = render_layout_action(original, layout_action, task["target_ratio"])
+        try:
+            if not output_path.exists():
+                save_report_image(rendered.image, output_path, quality=95)
+            metadata = {
+                "selected_operation": rendered.operation,
+                "source_box": list(rendered.source_box),
+                "content_box": list(rendered.content_box),
+                "background_color": list(rendered.background_color) if rendered.background_color else None,
+                "background_hex": (
+                    "#" + "".join(f"{channel:02X}" for channel in rendered.background_color)
+                    if rendered.background_color
+                    else None
+                ),
+                "padding_fraction": rendered.padding_fraction,
+                "render_width": rendered.image.width,
+                "render_height": rendered.image.height,
+            }
+        finally:
+            rendered.image.close()
+    finally:
+        original.close()
+    return output_path, metadata
+
+
 def run_judge(
     tasks: list[dict[str, Any]],
     output_dir: Path,
@@ -543,27 +610,43 @@ def run_judge(
             )
             return
 
-        candidate_path = render_candidate(task, generation["action"], output_dir)
+        if "operation" in generation["action"]:
+            candidate_path, render_metadata = render_unified_layout_candidate(
+                task, generation["action"], output_dir
+            )
+        else:
+            candidate_path = render_candidate(task, generation["action"], output_dir)
+            render_metadata = {}
         with Image.open(task["image_path"]) as source:
             original = ImageOps.exif_transpose(source).convert("RGB")
         with Image.open(candidate_path) as source:
             candidate = source.convert("RGB")
         if not hasattr(thread_state, "scorer"):
             thread_state.scorer = CropVLMScorer(str(prompt_path))
-        result = thread_state.scorer.score_detailed(
-            original,
-            candidate,
-            task["caption"],
-            task["title"],
-            log_context={
+        score_kwargs = {
+            "log_context": {
                 "task_id": task["task_id"],
                 "sample_id": task["image_id"],
                 "target_ratio": task["target_ratio"],
                 "action": generation["action"],
-            },
-        )
-        original.close()
-        candidate.close()
+            }
+        }
+        if render_metadata:
+            score_kwargs["evaluation_context"] = {
+                "requested_aspect_ratio": task["target_ratio"],
+                **render_metadata,
+            }
+        try:
+            result = thread_state.scorer.score_detailed(
+                original,
+                candidate,
+                task["caption"],
+                task["title"],
+                **score_kwargs,
+            )
+        finally:
+            original.close()
+            candidate.close()
         metadata = parse_judge_metadata(result.output_text)
         write_json_atomic(
             judge_path,
@@ -578,6 +661,7 @@ def run_judge(
                 "latency_ms": result.latency_ms,
                 "error_type": result.error_type,
                 "candidate_path": candidate_path.relative_to(output_dir).as_posix(),
+                "render_metadata": render_metadata,
                 **metadata,
             },
         )
@@ -626,6 +710,12 @@ def build_details(tasks: Sequence[dict[str, Any]], output_dir: Path) -> list[dic
                 "action_cx": action.get("cx"),
                 "action_cy": action.get("cy"),
                 "action_area": action.get("area"),
+                "layout_operation": action.get("operation"),
+                "layout_x1_pct": action.get("x1_pct"),
+                "layout_y1_pct": action.get("y1_pct"),
+                "layout_x2_pct": action.get("x2_pct"),
+                "layout_y2_pct": action.get("y2_pct"),
+                "render_metadata": judge.get("render_metadata", {}),
                 "judge_status": judge["status"],
                 "judge_label": judge.get("label"),
                 "judge_reward": judge.get("reward"),
@@ -660,6 +750,12 @@ def summarize_subset(details: Sequence[dict[str, Any]]) -> dict[str, Any]:
     tier_counts = Counter(str(int(label)) if label.is_integer() else str(label) for label in labels)
     rule_counts = Counter(rule for detail in counted for rule in detail["judge_rules"])
     total = len(details)
+    action_cx = [detail["action_cx"] for detail in generated if detail["action_cx"] is not None]
+    action_cy = [detail["action_cy"] for detail in generated if detail["action_cy"] is not None]
+    action_area = [detail["action_area"] for detail in generated if detail["action_area"] is not None]
+    operation_counts = Counter(
+        detail.get("layout_operation") for detail in generated if detail.get("layout_operation") is not None
+    )
     return {
         "tasks": total,
         "generation_success_count": len(generated),
@@ -699,9 +795,10 @@ def summarize_subset(details: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "mean_judge_reward": mean(rewards) if rewards else None,
         "tier_0_1_acceptable_rate": mean(label <= 1 for label in labels) if labels else None,
         "tier_3_5_severe_rate": mean(label >= 3 for label in labels) if labels else None,
-        "mean_action_cx": mean(detail["action_cx"] for detail in generated) if generated else None,
-        "mean_action_cy": mean(detail["action_cy"] for detail in generated) if generated else None,
-        "mean_action_area": mean(detail["action_area"] for detail in generated) if generated else None,
+        "mean_action_cx": mean(action_cx) if action_cx else None,
+        "mean_action_cy": mean(action_cy) if action_cy else None,
+        "mean_action_area": mean(action_area) if action_area else None,
+        "operation_counts": dict(sorted(operation_counts.items())),
         "judge_latency_ms_mean": mean(latencies) if latencies else None,
         "judge_latency_ms_p50": percentile(latencies, 0.50),
         "judge_latency_ms_p95": percentile(latencies, 0.95),
@@ -728,6 +825,7 @@ def write_result_tables(details: list[dict[str, Any]], summary: dict[str, Any], 
         {
             **detail,
             "judge_rules": json.dumps(detail["judge_rules"], ensure_ascii=False),
+            "render_metadata": json.dumps(detail.get("render_metadata", {}), sort_keys=True),
         }
         for detail in details
     ]
@@ -759,6 +857,8 @@ def write_result_tables(details: list[dict[str, Any]], summary: dict[str, Any], 
 
 
 def render_html_report(details: list[dict[str, Any]], summary: dict[str, Any], output_dir: Path) -> None:
+    layout_evaluation = any(detail.get("layout_operation") is not None for detail in details)
+    evaluation_name = "Unified Layout Evaluation" if layout_evaluation else "Four-Ratio Crop Evaluation"
     by_image: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for detail in details:
         by_image[detail["image_id"]].append(detail)
@@ -773,9 +873,9 @@ def render_html_report(details: list[dict[str, Any]], summary: dict[str, Any], o
         cards = []
         for detail in image_details:
             candidate_html = (
-                f'<img src="{html.escape(detail["candidate_path"])}" alt="Policy crop">'
+                f'<img src="{html.escape(detail["candidate_path"])}" alt="Policy result">'
                 if detail["candidate_path"]
-                else '<div class="missing">No valid crop</div>'
+                else '<div class="missing">No valid result</div>'
             )
             cards.append(
                 f"""
@@ -790,11 +890,22 @@ def render_html_report(details: list[dict[str, Any]], summary: dict[str, Any], o
                   <p><strong>Rules:</strong> {html.escape(', '.join(detail['judge_rules']))}</p>
                   <details><summary>Responses and scoring data</summary><pre>{html.escape(json.dumps({
                       'policy_response': detail['final_response'],
-                      'action': {
-                          'cx': detail['action_cx'],
-                          'cy': detail['action_cy'],
-                          'area': detail['action_area'],
-                      },
+                      'action': (
+                          {
+                              'operation': detail['layout_operation'],
+                              'x1_pct': detail['layout_x1_pct'],
+                              'y1_pct': detail['layout_y1_pct'],
+                              'x2_pct': detail['layout_x2_pct'],
+                              'y2_pct': detail['layout_y2_pct'],
+                          }
+                          if detail['layout_operation'] is not None
+                          else {
+                              'cx': detail['action_cx'],
+                              'cy': detail['action_cy'],
+                              'area': detail['action_area'],
+                          }
+                      ),
+                      'render_metadata': detail['render_metadata'],
                       'judge_output': detail['judge_output_text'],
                   }, ensure_ascii=False, indent=2))}</pre></details>
                 </article>
@@ -817,7 +928,7 @@ def render_html_report(details: list[dict[str, Any]], summary: dict[str, Any], o
 
     document = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(summary['model_name'])} Four-Ratio Crop Evaluation</title>
+<title>{html.escape(summary['model_name'])} {evaluation_name}</title>
 <style>
 :root {{ --ink:#1d2522; --muted:#63706a; --line:#d3dad6; --paper:#f1f4f2; --accent:#006b54; }}
 * {{ box-sizing:border-box; }} body {{ margin:0; color:var(--ink); background:var(--paper); font-family:"Segoe UI",sans-serif; }}
@@ -828,7 +939,7 @@ table {{ border-collapse:collapse; width:min(900px,100%); }} th,td {{ border-bot
 .candidate img {{ height:320px; }} p {{ overflow-wrap:anywhere; }} pre {{ white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }} .missing {{ min-height:180px; display:grid; place-items:center; background:#eee; color:var(--muted); }}
 @media (max-width:900px) {{ .layout {{ grid-template-columns:1fr; }} .candidates {{ grid-template-columns:1fr; }} main {{ width:100%; padding:10px; }} }}
 </style></head><body><main>
-<section class="summary"><h1>{html.escape(summary['model_name'])} Four-Ratio Crop Evaluation</h1><table>{metric_rows}</table></section>
+<section class="summary"><h1>{html.escape(summary['model_name'])} {evaluation_name}</h1><table>{metric_rows}</table></section>
 {''.join(sections)}
 </main></body></html>"""
     (output_dir / "report.html").write_text(document, encoding="utf-8")
@@ -854,8 +965,10 @@ def _markdown_image(alt: str, path: str | None) -> str:
 
 def render_markdown_report(details: list[dict[str, Any]], summary: dict[str, Any], output_dir: Path) -> None:
     overall = summary["overall"]
+    layout_evaluation = any(detail.get("layout_operation") is not None for detail in details)
+    evaluation_name = "Unified Layout Evaluation" if layout_evaluation else "Four-Ratio Crop Evaluation"
     lines = [
-        f"# {summary['model_name']} Four-Ratio Crop Evaluation",
+        f"# {summary['model_name']} {evaluation_name}",
         "",
         "## Run",
         "",
@@ -896,6 +1009,8 @@ def render_markdown_report(details: list[dict[str, Any]], summary: dict[str, Any
         "judge_latency_ms_p95",
     )
     lines.extend(f"| `{key}` | {_format_metric(overall.get(key))} |" for key in metric_keys)
+    if layout_evaluation:
+        lines.append(f"| `operation_counts` | `{json.dumps(overall['operation_counts'], sort_keys=True)}` |")
     lines.extend(
         [
             "",
@@ -988,18 +1103,25 @@ def render_markdown_report(details: list[dict[str, Any]], summary: dict[str, Any
                 f"**Original**  ",
                 _markdown_image("Original", first["original_render_path"]),
                 "",
-                "| Ratio | Candidate | Tier | Rules | Action `(cx, cy, area)` | Attempts |",
+                "| Ratio | Candidate | Tier | Rules | Action | Attempts |",
                 "|---:|---|---:|---|---|---:|",
             ]
         )
         for detail in image_details:
             rules = _escape_markdown_text(", ".join(detail["judge_rules"]))
             candidate_alt = f"Ratio {detail['target_ratio']:g}"
-            action = (
-                f"({detail['action_cx']}, {detail['action_cy']}, {detail['action_area']})"
-                if detail["action_cx"] is not None
-                else "N/A"
-            )
+            if detail.get("layout_operation") is not None:
+                action = (
+                    f"{detail['layout_operation']} "
+                    f"({detail['layout_x1_pct']}, {detail['layout_y1_pct']}, "
+                    f"{detail['layout_x2_pct']}, {detail['layout_y2_pct']})"
+                )
+            else:
+                action = (
+                    f"({detail['action_cx']}, {detail['action_cy']}, {detail['action_area']})"
+                    if detail["action_cx"] is not None
+                    else "N/A"
+                )
             lines.append(
                 f"| {detail['target_ratio']:g} | "
                 f"{_markdown_image(candidate_alt, detail['candidate_path'])} | "
@@ -1020,7 +1142,7 @@ def render_markdown_report(details: list[dict[str, Any]], summary: dict[str, Any
             "- `generation_attempts.jsonl`: every policy response and retry",
             "- `judge_responses.jsonl`: raw judge responses and latency",
             "- `renders/originals/`: source previews",
-            "- `renders/candidates/`: final policy crops",
+            "- `renders/candidates/`: final policy results",
             "",
         ]
     )
@@ -1078,10 +1200,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-images", type=int)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--judge-only-resume",
+        action="store_true",
+        help="Reuse complete generation progress and retry unfinished judge tasks without starting vLLM.",
+    )
     parser.add_argument("--canonicalize-bare-json", action="store_true")
     parser.add_argument(
         "--action-protocol",
-        choices=("legacy-crop-json", "percent-json-v1"),
+        choices=("legacy-crop-json", "percent-json-v1", "layout-json-v1"),
         default="legacy-crop-json",
     )
     args = parser.parse_args()
@@ -1098,6 +1225,8 @@ def parse_args() -> argparse.Namespace:
             raise ValueError(f"{name.replace('_', '-')} must be positive")
     if args.max_images is not None and args.max_images <= 0:
         raise ValueError("max-images must be positive")
+    if args.judge_only_resume and not args.resume:
+        raise ValueError("--judge-only-resume requires --resume")
     return args
 
 
@@ -1116,12 +1245,16 @@ def main() -> None:
         "model_name": args.model_name,
         "model_family": args.model_family,
         "output_protocol_version": (
-            "percent-json-v1-fenced-recovery-v1"
-            if args.action_protocol == "percent-json-v1"
+            "layout-json-v1-fenced-recovery-v1"
+            if args.action_protocol == "layout-json-v1"
             else (
+                "percent-json-v1-fenced-recovery-v1"
+                if args.action_protocol == "percent-json-v1"
+                else (
                 "crop-json-canonicalization-v1"
                 if args.canonicalize_bare_json
                 else "native-crop-protocol-v1"
+                )
             )
         ),
         "model": str(args.model.resolve()),
@@ -1200,7 +1333,18 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    run_parallel_generation(tasks, args.output_dir, args.model, args)
+    if args.judge_only_resume:
+        missing_generation = [
+            task["task_id"]
+            for task in tasks
+            if not generation_progress_path(args.output_dir, task["task_id"]).is_file()
+        ]
+        if missing_generation:
+            raise FileNotFoundError(
+                f"judge-only resume requires complete generation progress; missing={missing_generation[:5]}"
+            )
+    else:
+        run_parallel_generation(tasks, args.output_dir, args.model, args)
     run_judge(tasks, args.output_dir, args.vlm_prompt_path, args.judge_workers)
     details = build_details(tasks, args.output_dir)
     summary = {
@@ -1224,6 +1368,7 @@ def main() -> None:
     }
     write_generation_attempts(tasks, args.output_dir)
     write_result_tables(details, summary, args.output_dir)
+    render_html_report(details, summary, args.output_dir)
     render_markdown_report(details, summary, args.output_dir)
     write_json_atomic(
         args.output_dir / "_EVAL_COMPLETE.json",

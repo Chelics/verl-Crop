@@ -22,6 +22,21 @@ class ModeDecision:
     mode: str
 
 
+@dataclass(frozen=True)
+class LayoutAction:
+    operation: str
+    x1_pct: int
+    y1_pct: int
+    x2_pct: int
+    y2_pct: int
+
+
+@dataclass(frozen=True)
+class LayoutParseResult:
+    action: LayoutAction
+    strict_format: bool
+
+
 def parse_mode_decision(response: str) -> ModeDecision:
     """Parse an exact ``{"mode":"crop|pad"}`` JSON response."""
     try:
@@ -110,5 +125,46 @@ def parse_percent_crop_action(response: str) -> CropParseResult:
             raise strict_error
         return CropParseResult(
             action=_parse_percent_payload(fenced_match.group(1)),
+            strict_format=False,
+        )
+
+
+def _parse_layout_payload(payload_text: str) -> LayoutAction:
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as error:
+        raise ValueError("response must be exactly one valid JSON object") from error
+
+    expected_keys = {"operation", "x1_pct", "y1_pct", "x2_pct", "y2_pct"}
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise ValueError(f"layout payload must contain exactly {sorted(expected_keys)}")
+    if payload["operation"] not in {"crop", "crop_pad", "pad"}:
+        raise ValueError("operation must be exactly 'crop', 'crop_pad', or 'pad'")
+    coordinate_keys = expected_keys - {"operation"}
+    if any(isinstance(payload[key], bool) or not isinstance(payload[key], int) for key in coordinate_keys):
+        raise ValueError("layout coordinates must be integers")
+    if any(not 0 <= payload[key] <= 100 for key in coordinate_keys):
+        raise ValueError("layout coordinates must be in [0, 100]")
+    if payload["x1_pct"] >= payload["x2_pct"] or payload["y1_pct"] >= payload["y2_pct"]:
+        raise ValueError("layout lower bounds must be smaller than upper bounds")
+    if payload["operation"] == "pad" and any(
+        payload[key] != expected
+        for key, expected in {"x1_pct": 0, "y1_pct": 0, "x2_pct": 100, "y2_pct": 100}.items()
+    ):
+        raise ValueError("pad operation must use the full-image box [0, 0, 100, 100]")
+    return LayoutAction(**payload)
+
+
+def parse_layout_action(response: str) -> LayoutParseResult:
+    """Parse the unified crop/crop-pad/pad action with conservative fence recovery."""
+    stripped = response.strip()
+    try:
+        return LayoutParseResult(action=_parse_layout_payload(stripped), strict_format=True)
+    except ValueError as strict_error:
+        fenced_match = _JSON_CODE_BLOCK_PATTERN.fullmatch(response)
+        if fenced_match is None:
+            raise strict_error
+        return LayoutParseResult(
+            action=_parse_layout_payload(fenced_match.group(1)),
             strict_format=False,
         )
