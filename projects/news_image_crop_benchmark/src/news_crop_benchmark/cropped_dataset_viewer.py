@@ -221,6 +221,11 @@ class CroppedDataset:
             "original": str(self.original_path(trace_id)) if self.original_path(trace_id).is_file() else None,
             "gallery": [(path, caption) for path, caption in gallery if path is not None],
             "override_gallery": override_gallery,
+            "override_records": [
+                self.overrides[(trace_id, str(row["aspect_ratio"]))]
+                for row in rows
+                if (trace_id, str(row["aspect_ratio"])) in self.overrides
+            ],
             "rows": rows,
         }
 
@@ -362,11 +367,20 @@ def build_cropped_dataset_app(dataset: CroppedDataset) -> Any:
             ]
             for row in view["rows"]
         ]
-        reasons = "\n\n".join(
+        current_reasons = "\n\n".join(
             f"**{html.escape(str(row['aspect_ratio']))} · {html.escape(str(row['render_mode']).upper())}**  \n"
             f"{html.escape(str(row['reason']))}"
             for row in view["rows"]
         )
+        proposed_reasons = "\n\n".join(
+            f"**{html.escape(str(record['aspect_ratio']))} · PROPOSED "
+            f"{html.escape(str(record['operation']).upper())}**  \n"
+            f"{html.escape(str(record['reason']))}"
+            for record in view["override_records"]
+        )
+        reasons = f"#### Current cropped_v2 provenance\n\n{current_reasons}"
+        if proposed_reasons:
+            reasons += f"\n\n---\n\n#### Proposed editorial reasons\n\n{proposed_reasons}"
         return (
             index,
             index + 1,
@@ -472,7 +486,7 @@ def build_cropped_dataset_app(dataset: CroppedDataset) -> Any:
             interactive=False,
             label="Render details",
         )
-        with gr.Accordion("Reasons", open=True):
+        with gr.Accordion("Reasons and provenance", open=True):
             reasons = gr.Markdown(initial[8])
         with gr.Accordion("Raw records", open=False):
             raw_records = gr.JSON(initial[9], label=None)

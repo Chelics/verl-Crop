@@ -37,6 +37,7 @@ def test_renders_crop_and_pad_overrides(tmp_path):
 
     assert len(records) == 2
     assert records[0]["output_width"] == records[0]["output_height"]
+    assert records[0]["source_box_pixels"] == [10, 0, 110, 100]
     assert abs(records[1]["output_width"] / records[1]["output_height"] - 1.91) < 0.02
     assert records[1]["padding_fraction"] > 0
     assert all((tmp_path / "output" / record["image_path"]).is_file() for record in records)

@@ -70,7 +70,13 @@ def render_overrides(
                 background = spec.get("background_color_rgb")
                 background_color = tuple(int(value) for value in background) if background is not None else None
                 if operation == "crop":
-                    candidate = _fit_box_to_ratio(selected, target_ratio)
+                    candidate, fitted_box = _fit_box_to_ratio(selected, target_ratio)
+                    source_box = (
+                        source_box[0] + fitted_box[0],
+                        source_box[1] + fitted_box[1],
+                        source_box[0] + fitted_box[2],
+                        source_box[1] + fitted_box[3],
+                    )
                     content_box = (0, 0, candidate.width, candidate.height)
                     padding_fraction = 0.0
                 elif operation == "crop_pad":
@@ -132,7 +138,10 @@ def _pixel_box(box: list[float], size: tuple[int, int]) -> tuple[int, int, int, 
     return left, top, right, bottom
 
 
-def _fit_box_to_ratio(image: Image.Image, target_ratio: float) -> Image.Image:
+def _fit_box_to_ratio(
+    image: Image.Image,
+    target_ratio: float,
+) -> tuple[Image.Image, tuple[int, int, int, int]]:
     observed_ratio = image.width / image.height
     if observed_ratio > target_ratio:
         width = max(1, round(image.height * target_ratio))
@@ -145,4 +154,4 @@ def _fit_box_to_ratio(image: Image.Image, target_ratio: float) -> Image.Image:
     candidate = image.crop(box)
     if not math.isclose(candidate.width / candidate.height, target_ratio, abs_tol=1 / candidate.height):
         raise RuntimeError("rendered override does not match target ratio")
-    return candidate
+    return candidate, box

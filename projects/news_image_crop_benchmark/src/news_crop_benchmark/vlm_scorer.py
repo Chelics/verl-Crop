@@ -6,7 +6,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from collections.abc import Callable
 from functools import lru_cache
 from io import BytesIO
@@ -348,7 +348,7 @@ class CropVLMScorer:
                     _append_jsonl(
                         self.response_log_path,
                         {
-                            "timestamp": datetime.now(UTC).isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                             "status": status,
                             "model": self.model,
                             "response_id": response_id,
@@ -389,7 +389,7 @@ class CropVLMScorer:
             _append_jsonl(
                 self.response_log_path,
                 {
-                    "timestamp": datetime.now(UTC).isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "status": "failed",
                     "model": self.model,
                     "headline": headline,

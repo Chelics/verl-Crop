@@ -178,3 +178,4 @@ def test_loads_and_filters_rendered_overrides(tmp_path):
     assert dataset.filter_trace_ids(has_override="Yes") == ["trace-a"]
     assert dataset.filter_trace_ids(has_override="No") == ["trace-b"]
     assert view["override_gallery"] == [(str(override_image), "1:1 | PROPOSED CROP")]
+    assert view["override_records"][0]["operation"] == "crop"

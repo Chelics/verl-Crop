@@ -297,6 +297,31 @@ amlt storage upload -c amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_ou
 
 Do not overwrite `cropped.parquet`; consumers should opt in to the versioned v2 path explicitly.
 
+After reviewing the local GPT layout actions, render the complete 30-key v2 manifest and merge it
+from the original baseline into `cropped_v3.parquet`. Every replacement has a non-null source bbox;
+the Parquet `reason` contains the Proposed editorial reason without provenance prefixes. Provenance
+is recorded separately in the merge report.
+
+```powershell
+.venv-viewer\Scripts\python.exe projects/news_image_crop_benchmark/scripts/render_cropped_overrides.py `
+  --train T:\image_once_train.parquet `
+  --manifest projects/news_image_crop_benchmark/config/cropped_overrides/v2.jsonl `
+  --output-dir "$env:LOCALAPPDATA\news-crop-benchmark\cropped-overrides\v2"
+
+.venv-viewer\Scripts\python.exe projects/news_image_crop_benchmark/scripts/merge_cropped_overrides.py `
+  --base T:\cropped.parquet `
+  --override-dir "$env:LOCALAPPDATA\news-crop-benchmark\cropped-overrides\v2" `
+  --output "$env:USERPROFILE\Downloads\cropped_v3.parquet" `
+  --row-group-size 64
+
+amlt storage upload -c amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output `
+  "$env:USERPROFILE\Downloads\cropped_v3.parquet" `
+  v-yukunban/crop-image-dataset/cropped_v3.parquet
+```
+
+Do not overwrite `cropped.parquet` or `cropped_v2.parquet`; consumers should opt in to the versioned
+v3 path explicitly.
+
 ## Image-Once Zero-Shot Evaluation
 
 `scripts/evaluate_image_once_vlm.py` evaluates a frozen vision-language policy model directly on the raw
