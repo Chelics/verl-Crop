@@ -76,6 +76,19 @@ PYTHONPATH=projects/news_image_crop_benchmark/src \
   python3 -m unittest discover -s projects/news_image_crop_benchmark/tests -v
 ```
 
+## Detailed Crop/Fill SFT
+
+The preferred complete-task SFT source is `cropped_v3.parquet`. Convert it to
+the messages-based six-field format documented in
+[docs/cropped_v3_detail_sft.md](docs/cropped_v3_detail_sft.md). The target
+contains crop/fill decisions, a normalized original-image crop box, RGB fill
+color, and the reviewed reason; the input contains the original image,
+headline, caption, and target ratio.
+
+The older `cropped_sft.parquet` only teaches the normalized
+`<crop>{"cx","cy","area"}</crop>` crop-only protocol and must not be used for
+the complete crop/fill task.
+
 Inspect the source without reading the 3.1 GB image-bytes column:
 
 ```bash
@@ -147,7 +160,7 @@ edge median.
 
 The frozen Qwen3.5-9B base uses the existing resumable image-once evaluator with
 `--action-protocol layout-json-v1` and the final-layout rubric in
-`config/layout_vlm_prompt.txt`. AMLT entrypoints are:
+`config/layout_vlm_prompt.txt`. AMLT entrypoints live in `projects/news_image_crop_benchmark/amlt/`:
 
 ```text
 amlt_unified_layout_base_preflight.yaml  4 images / 16 tasks
@@ -285,7 +298,7 @@ baseline schema, verifies every untouched row, and writes a JSON audit report ne
   --output "$env:USERPROFILE\Downloads\cropped_v2.parquet" `
   --row-group-size 64
 
-amlt storage upload -c amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output `
+amlt storage upload -c projects/news_image_crop_benchmark/amlt/amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output `
   "$env:USERPROFILE\Downloads\cropped_v2.parquet" `
   v-yukunban/crop-image-dataset/cropped_v2.parquet
 
@@ -314,7 +327,7 @@ is recorded separately in the merge report.
   --output "$env:USERPROFILE\Downloads\cropped_v3.parquet" `
   --row-group-size 64
 
-amlt storage upload -c amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output `
+amlt storage upload -c projects/news_image_crop_benchmark/amlt/amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output `
   "$env:USERPROFILE\Downloads\cropped_v3.parquet" `
   v-yukunban/crop-image-dataset/cropped_v3.parquet
 ```
@@ -339,7 +352,8 @@ effective SHA-256 in `run_config.yaml`, so `--resume` rejects results produced w
 template. `--vlm-prompt-path` remains the independent GPT judge rubric and should stay fixed during
 policy prompt comparisons.
 
-The AMLT config is `amlt_image_once_qwen35_vlm_eval.yaml` at the repository root. It expects:
+The AMLT config is
+`projects/news_image_crop_benchmark/amlt/amlt_image_once_qwen35_vlm_eval.yaml`. It expects:
 
 ```text
 /mnt/blob_output/v-yukunban/crop-image-dataset/image_once_test.parquet
@@ -356,20 +370,20 @@ JSONL/Parquet details, JSON/CSV summaries, and a Markdown report. Read the repor
 downloading image assets:
 
 ```bash
-amlt storage cat -c amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output \
+amlt storage cat -c projects/news_image_crop_benchmark/amlt/amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output \
   <result-prefix>/report.md
 ```
 
 Parse the AMLT config without submitting a job:
 
 ```bash
-amlt run amlt_image_once_qwen35_vlm_eval.yaml --dump
+amlt run projects/news_image_crop_benchmark/amlt/amlt_image_once_qwen35_vlm_eval.yaml --dump
 ```
 
 Submit the evaluation with an explicit experiment name:
 
 ```bash
-amlt run amlt_image_once_qwen35_vlm_eval.yaml qwen35-image-once-vlm-20260810 \
+amlt run projects/news_image_crop_benchmark/amlt/amlt_image_once_qwen35_vlm_eval.yaml qwen35-image-once-vlm-20260810 \
   --description "Frozen Qwen3.5-9B four-ratio crops scored by the GPT visual judge"
 ```
 
@@ -395,13 +409,13 @@ Each model config has a one-image/four-ratio preflight and a separate full job. 
 preflight first:
 
 ```bash
-amlt run amlt_image_once_qwen35_vlm_eval.yaml :qwen35-image-once-preflight \
+amlt run projects/news_image_crop_benchmark/amlt/amlt_image_once_qwen35_vlm_eval.yaml :qwen35-image-once-preflight \
   qwen35-crop-preflight-<run-id>
 
-amlt run amlt_image_once_internvl2_vlm_eval.yaml :internvl2-8b-preflight \
+amlt run projects/news_image_crop_benchmark/amlt/amlt_image_once_internvl2_vlm_eval.yaml :internvl2-8b-preflight \
   internvl2-crop-preflight-<run-id>
 
-amlt run amlt_image_once_molmo_vlm_eval.yaml :molmo-7b-d-preflight \
+amlt run projects/news_image_crop_benchmark/amlt/amlt_image_once_molmo_vlm_eval.yaml :molmo-7b-d-preflight \
   molmo-crop-preflight-<run-id>
 ```
 
@@ -409,10 +423,10 @@ After `_EVAL_COMPLETE.json` and four completed Judge results are present, submit
 full job explicitly:
 
 ```bash
-amlt run amlt_image_once_internvl2_vlm_eval.yaml :internvl2-8b-full \
+amlt run projects/news_image_crop_benchmark/amlt/amlt_image_once_internvl2_vlm_eval.yaml :internvl2-8b-full \
   internvl2-crop-full-<run-id>
 
-amlt run amlt_image_once_molmo_vlm_eval.yaml :molmo-7b-d-full \
+amlt run projects/news_image_crop_benchmark/amlt/amlt_image_once_molmo_vlm_eval.yaml :molmo-7b-d-full \
   molmo-crop-full-<run-id>
 ```
 

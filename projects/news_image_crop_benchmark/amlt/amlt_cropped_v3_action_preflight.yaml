@@ -1,0 +1,123 @@
+# yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
+# ^ Update with: amlt schema add <file>  |  VS Code: Run Task > amlt
+# Amulet config file. Docs: https://amulet-docs.azurewebsites.net/config_file.html
+# All required values are filled below.
+description: Validate action-v4 processor wiring and one-step Qwen3.5 LoRA FSDP training before the 4GPU run
+
+target:
+  service: manifold  # run "amlt target list manifold" to see available targets
+  name: Feeds
+  workspace_name: CS-NewsAndFeeds-Singularity  # the Singularity workspace to submit to
+
+storage:
+  blob_output:
+    storage_account_name: csnewsandfeeds4150361735
+    container_name: unium
+    mount_dir: /mnt/blob_output
+    is_output: true
+
+# REQUIRED: Docker environment
+# Manifold jobs authenticate to Azure (storage, ACR) via a User-Assigned
+# Managed Identity, auto-detected from the workspace in most cases. Only set
+# _AZUREML_SINGULARITY_JOB_UAI in 'env' below if auto-detection is ambiguous
+# (multiple non-primary identities); run 'amlt run' to see the available list.
+environment:
+  image: amlt-sing/acpt-torch2.8.x-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - python -m pip install uv
+    - uv python install 3.12
+    - uv venv --seed --python 3.12 .venv-qwen35
+    - uv pip install --python .venv-qwen35/bin/python "torch==2.13.0" "torchvision==0.28.0" "transformers==5.10.4" -e .
+    - uv pip install --python .venv-qwen35/bin/python -e "projects/news_image_crop_benchmark[data,train,test]"
+    - .venv-qwen35/bin/python -c "import torch, torchvision, transformers; print(torch.__version__, torchvision.__version__, transformers.__version__)"
+    - .venv-qwen35/bin/python -c "import verl.trainer.sft_trainer; print('sft-import-ok')"
+
+# REQUIRED: code to run. Set local_dir to your code directory � it must
+# exist and be non-empty. $CONFIG_DIR = directory of this file; the default
+# $CONFIG_DIR/src means: put your code in a 'src' folder next to this file.
+code:
+  local_dir: $CONFIG_DIR/../../..
+
+# REQUIRED: Jobs to run. SKU examples: C1 (1 CPU), G1 (1 GPU), G4 (4 GPUs), G8-V100 (8 V100s)
+# Commands run from the uploaded code directory (code.local_dir).
+# 'command' is a shell script block (|): one line per step, e.g. python train.py --lr 0.01
+# Write outputs to $AMLT_OUTPUT_DIR for retrieval with 'amlt results'.
+# Use $$VAR to pass env vars literally ($VAR is interpolated at submission time).
+jobs:
+  - name: action-v4-processor-preflight
+    sku: 5C3
+    sla_tier: basic
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: /subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895/resourcegroups/AMLStudio/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml
+    command: |
+      set -euo pipefail
+      DATA_ROOT=/mnt/blob_output/v-yukunban/crop-image-dataset/sft/cropped-v3-action-v4
+      MODEL=/mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B
+      PROMPT=projects/news_image_crop_benchmark/config/policy_prompts/v5_crop_fill_action.txt
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/validate_crop_fill_action_sft.py \
+        --data "$$DATA_ROOT/train.parquet" \
+        --model "$$MODEL" \
+        --prompt-template "$$PROMPT" \
+        --max-length 4096 \
+        --max-samples 4 \
+        --output "$$AMLT_OUTPUT_DIR/train_processor_validation.json"
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/validate_crop_fill_action_sft.py \
+        --data "$$DATA_ROOT/validation.parquet" \
+        --model "$$MODEL" \
+        --prompt-template "$$PROMPT" \
+        --max-length 4096 \
+        --max-samples 4 \
+        --output "$$AMLT_OUTPUT_DIR/validation_processor_validation.json"
+      PYTHON_BIN=.venv-qwen35/bin/python \
+      PRINT_CONFIG=1 \
+      NDEVICES_PER_NODE=4 \
+      MODEL_PATH="$$MODEL" \
+      TRAIN_FILE="$$DATA_ROOT/train.parquet" \
+      VAL_FILE="$$DATA_ROOT/validation.parquet" \
+      OUTPUT_DIR=/mnt/blob_output/v-yukunban/checkpoints/news_image_crop_fill_sft/config_only \
+      EXPERIMENT_NAME=qwen35_cropped_v3_action_v4_config_only \
+      bash projects/news_image_crop_benchmark/run_qwen3_5_9b_crop_fill_sft.sh \
+        > "$$AMLT_OUTPUT_DIR/resolved_config.yaml"
+    
+  - name: action-v4-one-step-smoke
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: /subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895/resourcegroups/AMLStudio/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml
+    command: |
+      set -euo pipefail
+      DATA_ROOT=/mnt/blob_output/v-yukunban/crop-image-dataset/sft/cropped-v3-action-v4
+      MODEL=/mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B
+      PROMPT=projects/news_image_crop_benchmark/config/policy_prompts/v5_crop_fill_action.txt
+      CHECKPOINT=/mnt/blob_output/v-yukunban/checkpoints/news_image_crop_fill_sft/qwen35_cropped_v3_action_v4_smoke_20260818
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/validate_crop_fill_action_sft.py \
+        --data "$$DATA_ROOT/train.parquet" \
+        --model "$$MODEL" \
+        --prompt-template "$$PROMPT" \
+        --max-length 4096 \
+        --max-samples 4 \
+        --output "$$AMLT_OUTPUT_DIR/processor_validation.json"
+      rm -rf "$$CHECKPOINT"
+      PYTHON_BIN=.venv-qwen35/bin/python \
+      NDEVICES_PER_NODE=1 \
+      TRAIN_BATCH_SIZE=2 \
+      TOTAL_EPOCHS=1 \
+      TOTAL_TRAINING_STEPS=1 \
+      SAVE_FREQ=-1 \
+      TEST_FREQ=-1 \
+      MODEL_PATH="$$MODEL" \
+      TRAIN_FILE="$$DATA_ROOT/train.parquet" \
+      VAL_FILE="$$DATA_ROOT/validation.parquet" \
+      OUTPUT_DIR="$$CHECKPOINT" \
+      EXPERIMENT_NAME=qwen35_cropped_v3_action_v4_smoke_20260818 \
+      bash projects/news_image_crop_benchmark/run_qwen3_5_9b_crop_fill_sft.sh \
+        data.train_max_samples=8 \
+        data.val_max_samples=4 \
+        trainer.resume_mode=disable \
+        trainer.max_ckpt_to_keep=1
+      test -f "$$CHECKPOINT/global_step_1/lora_train_meta.json"
+      printf '%s\n' "$$CHECKPOINT/global_step_1" > "$$AMLT_OUTPUT_DIR/smoke_checkpoint.txt"
+

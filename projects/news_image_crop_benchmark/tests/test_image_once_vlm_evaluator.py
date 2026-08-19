@@ -286,6 +286,76 @@ def test_generation_retries_invalid_output_with_new_seed_and_keeps_history(tmp_p
     assert progress["attempts"][0]["response"] == "invalid"
 
 
+def test_generation_loads_lora_adapter_for_vllm(tmp_path):
+    module = load_evaluator_module()
+    observed = {}
+
+    class FakeProcessor:
+        def apply_chat_template(self, messages, **_kwargs):
+            return messages[0]["content"][1]["text"]
+
+    class FakeAutoProcessor:
+        @staticmethod
+        def from_pretrained(_model_path, local_files_only):
+            assert local_files_only
+            return FakeProcessor()
+
+    class FakeSamplingParams:
+        def __init__(self, **_kwargs):
+            pass
+
+    class FakeLoRARequest:
+        def __init__(self, name, adapter_id, path):
+            observed["request"] = (name, adapter_id, path)
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            observed["llm_kwargs"] = kwargs
+
+        def generate(self, requests, sampling_params, lora_request=None):
+            observed["lora_request"] = lora_request
+            response = '<crop>{"cx":500,"cy":500,"area":400}</crop>'
+            return [SimpleNamespace(outputs=[SimpleNamespace(text=response)]) for _ in requests]
+
+    image_path = tmp_path / "image.webp"
+    image_path.write_bytes(make_webp_payload())
+    adapter_path = tmp_path / "adapter"
+    adapter_path.mkdir()
+    task = {"task_id": "image__ratio_1", "prompt": "<image>\nCrop", "image_path": str(image_path)}
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoProcessor = FakeAutoProcessor
+    fake_vllm = types.ModuleType("vllm")
+    fake_vllm.LLM = FakeLLM
+    fake_vllm.SamplingParams = FakeSamplingParams
+    fake_lora = types.ModuleType("vllm.lora")
+    fake_lora_request = types.ModuleType("vllm.lora.request")
+    fake_lora_request.LoRARequest = FakeLoRARequest
+    args = make_args()
+    args.lora_adapter_path = adapter_path
+    args.lora_rank = 32
+
+    fake_modules = {
+        "transformers": fake_transformers,
+        "vllm": fake_vllm,
+        "vllm.lora": fake_lora,
+        "vllm.lora.request": fake_lora_request,
+    }
+    with patch.dict(sys.modules, fake_modules):
+        module.run_generation_worker(
+            rank=0,
+            gpu_devices=["0"],
+            tasks=[task],
+            output_dir=tmp_path,
+            model_path=tmp_path / "model",
+            args=args,
+        )
+
+    assert observed["llm_kwargs"]["enable_lora"] is True
+    assert observed["llm_kwargs"]["max_lora_rank"] == 32
+    assert observed["request"] == ("news-crop-sft", 1, str(adapter_path))
+    assert observed["lora_request"] is not None
+
+
 def test_generation_canonicalizes_bare_json_and_preserves_raw_response(tmp_path):
     module = load_evaluator_module()
 

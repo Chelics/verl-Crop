@@ -33,7 +33,7 @@ environment:
 # exist and be non-empty. $CONFIG_DIR = directory of this file; the default
 # $CONFIG_DIR/src means: put your code in a 'src' folder next to this file.
 code:
-  local_dir: $CONFIG_DIR
+  local_dir: $CONFIG_DIR/../../..
 
 # REQUIRED: Jobs to run. SKU examples: C1 (1 CPU), G1 (1 GPU), G4 (4 GPUs), G8-V100 (8 V100s)
 # Commands run from the uploaded code directory (code.local_dir).

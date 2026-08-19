@@ -25,7 +25,7 @@ environment:
     - uv pip install --python .venv-internvl2/bin/python "Pillow>=10" "pyarrow>=19" pyyaml "openai>=2" "azure-identity>=1.17"
 
 code:
-  local_dir: $CONFIG_DIR
+  local_dir: $CONFIG_DIR/../../..
 
 jobs:
   - name: internvl2-8b-preflight

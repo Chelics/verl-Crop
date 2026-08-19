@@ -123,3 +123,32 @@ def test_builds_gradio_app_when_viewer_extra_is_installed(tmp_path):
     app = build_app(ResultDataset(tmp_path))
 
     assert app.title == "Crop Evaluation Results"
+
+
+def test_normalizes_action_v4_operation_and_ratio_quality(tmp_path):
+    write_result(tmp_path)
+    rows = [
+        {
+            "task_id": "image-a__ratio_1",
+            "source_index": 0,
+            "image_id": "image-a",
+            "title": "Title A",
+            "caption": "Caption A",
+            "target_ratio": 1.0,
+            "original_render_path": "renders/originals/image-a.jpg",
+            "candidate_path": "renders/candidates/image-a-1.jpg",
+            "generation_status": "valid",
+            "operation": "crop",
+            "ratio_compliant": True,
+            "output_ratio_error": 0.00125,
+            "attempt_count": 1,
+        }
+    ]
+    (tmp_path / "details.jsonl").write_text(json.dumps(rows[0]) + "\n", encoding="utf-8")
+    dataset = ResultDataset(tmp_path)
+
+    assert dataset.modes == ["crop"]
+    assert dataset.filter_image_ids(mode="crop") == ["image-a"]
+    assert dataset.image_view("image-a")["candidates"][0][1] == (
+        "Ratio 1.0 | CROP | RATIO OK | Error 0.125%"
+    )

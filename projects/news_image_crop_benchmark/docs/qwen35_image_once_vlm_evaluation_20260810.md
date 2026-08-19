@@ -288,7 +288,7 @@ qwen35-image-once-four-ratios-vlm-20260810-v2/
 直接查看 Markdown：
 
 ```powershell
-amlt storage cat -c amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output `
+amlt storage cat -c projects/news_image_crop_benchmark/amlt/amlt_image_once_qwen35_vlm_eval.yaml --storage-id blob_output `
 	v-yukunban/crop-image-dataset/results/qwen35-image-once-four-ratios-vlm-20260810-v2/report.md
 ```
 

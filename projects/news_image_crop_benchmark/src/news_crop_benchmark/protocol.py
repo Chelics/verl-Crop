@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 
@@ -34,6 +35,30 @@ class LayoutAction:
 @dataclass(frozen=True)
 class LayoutParseResult:
     action: LayoutAction
+    strict_format: bool
+
+
+@dataclass(frozen=True)
+class CropFillAction:
+    target_ratio: float
+    is_cropped: bool
+    is_filled: bool
+    crop_box: tuple[float, float, float, float] | None
+    fill_color: tuple[int, int, int] | None
+
+    @property
+    def operation(self) -> str:
+        return {
+            (True, False): "crop",
+            (True, True): "crop_fill",
+            (False, True): "fill",
+            (False, False): "keep",
+        }[(self.is_cropped, self.is_filled)]
+
+
+@dataclass(frozen=True)
+class CropFillParseResult:
+    action: CropFillAction
     strict_format: bool
 
 
@@ -168,3 +193,57 @@ def parse_layout_action(response: str) -> LayoutParseResult:
             action=_parse_layout_payload(fenced_match.group(1)),
             strict_format=False,
         )
+
+
+def _parse_crop_fill_payload(payload_text: str) -> CropFillAction:
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as error:
+        raise ValueError("response must be exactly one valid JSON object") from error
+    expected_fields = ("target_ratio", "is_cropped", "is_filled", "crop_box", "fill_color")
+    if not isinstance(payload, dict) or tuple(payload) != expected_fields:
+        raise ValueError(f"crop/fill payload fields must be ordered as {expected_fields}")
+    ratio = payload["target_ratio"]
+    if isinstance(ratio, bool) or not isinstance(ratio, int | float) or not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError("target_ratio must be a positive finite number")
+    is_cropped = payload["is_cropped"]
+    is_filled = payload["is_filled"]
+    if not isinstance(is_cropped, bool) or not isinstance(is_filled, bool):
+        raise ValueError("is_cropped and is_filled must be booleans")
+
+    raw_box = payload["crop_box"]
+    crop_box = None
+    if is_cropped:
+        if (
+            not isinstance(raw_box, list)
+            or len(raw_box) != 4
+            or any(isinstance(value, bool) or not isinstance(value, int | float) for value in raw_box)
+            or not all(math.isfinite(float(value)) for value in raw_box)
+            or not (0 <= raw_box[0] < raw_box[2] <= 1 and 0 <= raw_box[1] < raw_box[3] <= 1)
+        ):
+            raise ValueError("cropped action must contain a valid normalized crop_box")
+        crop_box = tuple(float(value) for value in raw_box)
+    elif raw_box is not None:
+        raise ValueError("non-cropped action must use crop_box=null")
+
+    raw_color = payload["fill_color"]
+    fill_color = None
+    if is_filled:
+        if (
+            not isinstance(raw_color, list)
+            or len(raw_color) != 3
+            or any(
+                isinstance(channel, bool) or not isinstance(channel, int) or not 0 <= channel <= 255
+                for channel in raw_color
+            )
+        ):
+            raise ValueError("filled action must contain integer RGB fill_color")
+        fill_color = tuple(raw_color)
+    elif raw_color is not None:
+        raise ValueError("non-filled action must use fill_color=null")
+    return CropFillAction(float(ratio), is_cropped, is_filled, crop_box, fill_color)
+
+
+def parse_crop_fill_action(response: str) -> CropFillParseResult:
+    """Parse the exact action-v4 JSON protocol without Markdown recovery."""
+    return CropFillParseResult(action=_parse_crop_fill_payload(response.strip()), strict_format=True)

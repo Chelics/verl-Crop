@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 from news_crop_benchmark.geometry import BBox
-from news_crop_benchmark.protocol import LayoutAction
+from news_crop_benchmark.protocol import CropFillAction, LayoutAction
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,17 @@ class LayoutRender:
     content_box: tuple[int, int, int, int]
     background_color: tuple[int, int, int] | None
     padding_fraction: float
+
+
+@dataclass(frozen=True)
+class CropFillRender:
+    image: Image.Image
+    operation: str
+    source_box: tuple[int, int, int, int]
+    content_box: tuple[int, int, int, int]
+    background_color: tuple[int, int, int] | None
+    padding_fraction: float
+    output_ratio_error: float
 
 
 def edge_median_color(
@@ -110,6 +121,74 @@ def _pixel_box(box: BBox, width: int, height: int) -> tuple[int, int, int, int]:
     right = max(left + 1, min(width, int(round(box.x2))))
     bottom = max(top + 1, min(height, int(round(box.y2))))
     return left, top, right, bottom
+
+
+def _normalized_pixel_box(
+    box: tuple[float, float, float, float], width: int, height: int
+) -> tuple[int, int, int, int]:
+    left = max(0, min(width - 1, math.floor(box[0] * width)))
+    top = max(0, min(height - 1, math.floor(box[1] * height)))
+    right = max(left + 1, min(width, math.ceil(box[2] * width)))
+    bottom = max(top + 1, min(height, math.ceil(box[3] * height)))
+    return left, top, right, bottom
+
+
+def render_crop_fill_action(
+    image: Image.Image,
+    action: CropFillAction,
+    expected_target_ratio: float,
+) -> CropFillRender:
+    """Render action-v4 exactly: crop the selected box, then optionally pad with the predicted color."""
+    if expected_target_ratio <= 0:
+        raise ValueError("expected_target_ratio must be positive")
+    if not math.isclose(action.target_ratio, expected_target_ratio, rel_tol=0.0, abs_tol=1e-6):
+        raise ValueError(
+            f"predicted target_ratio differs from task: predicted={action.target_ratio}, expected={expected_target_ratio}"
+        )
+    source = image.convert("RGB")
+    width, height = source.size
+    if width <= 0 or height <= 0:
+        source.close()
+        raise ValueError("image dimensions must be positive")
+    try:
+        if action.is_cropped:
+            assert action.crop_box is not None
+            source_box = _normalized_pixel_box(action.crop_box, width, height)
+            retained = source.crop(source_box)
+        else:
+            source_box = (0, 0, width, height)
+            retained = source.copy()
+        try:
+            if action.is_filled:
+                assert action.fill_color is not None
+                padded = pad_image_to_ratio(
+                    retained,
+                    expected_target_ratio,
+                    background_color=action.fill_color,
+                )
+                output = padded.image
+                content_box = padded.content_box
+                background_color = padded.background_color
+                padding_fraction = 1.0 - (retained.width * retained.height) / (output.width * output.height)
+            else:
+                output = retained.copy()
+                content_box = (0, 0, output.width, output.height)
+                background_color = None
+                padding_fraction = 0.0
+        finally:
+            retained.close()
+        actual_ratio = output.width / output.height
+        return CropFillRender(
+            image=output,
+            operation=action.operation,
+            source_box=source_box,
+            content_box=content_box,
+            background_color=background_color,
+            padding_fraction=padding_fraction,
+            output_ratio_error=abs(actual_ratio - expected_target_ratio) / expected_target_ratio,
+        )
+    finally:
+        source.close()
 
 
 def _largest_target_box_inside(box: BBox, target_ratio: float) -> BBox:

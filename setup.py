@@ -28,6 +28,7 @@ install_requires = [
     "codetiming",
     "datasets",
     "dill",
+    "fastapi",
     "hydra-core",
     "numpy>=2.0.0",
     "pandas",
@@ -41,6 +42,7 @@ install_requires = [
     # 5.6.0 ships a broken flash-attention path (crashes on s_aux=None for
     # sink-less models); fixed in 5.6.1. See huggingface/transformers#45588.
     "transformers>=5.5.3,!=5.6.0,<5.11",
+    "uvicorn",
     "wandb",
     "packaging>=20.0",
     "tensorboard",

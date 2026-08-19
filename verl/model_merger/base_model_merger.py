@@ -68,6 +68,11 @@ def parse_args():
     merge_parser.add_argument(
         "--private", action="store_true", help="Whether to upload the model to a private Hugging Face repository"
     )
+    merge_parser.add_argument(
+        "--lora-only",
+        action="store_true",
+        help="Export only a PEFT LoRA adapter and skip full Hugging Face model serialization.",
+    )
 
     test_parser = subparsers.add_parser(
         "test", parents=[base_op_parser], help="Test merged model against a reference Hugging Face model"
@@ -115,6 +120,7 @@ class ModelMergerConfig:
     hf_model_config_path: Optional[str] = None
     hf_upload: bool = field(init=False)
     use_cpu_initialization: bool = False
+    lora_only: bool = False
 
     def __post_init__(self):
         self.hf_upload = self.operation == "merge" and bool(self.hf_upload_path)
@@ -158,6 +164,7 @@ def generate_config_from_args(args: argparse.Namespace) -> ModelMergerConfig:
             hf_upload_path=args.hf_upload_path,
             private=args.private,
             test_hf_dir=None,
+            lora_only=args.lora_only,
         )
         os.makedirs(config.target_dir, exist_ok=True)
     elif args.operation == "test":
@@ -168,6 +175,7 @@ def generate_config_from_args(args: argparse.Namespace) -> ModelMergerConfig:
             target_dir=None,
             hf_upload_path=None,
             private=False,
+            lora_only=False,
         )
     else:
         raise NotImplementedError(f"Unknown operation: {args.operation}")
@@ -408,6 +416,13 @@ class BaseModelMerger(ABC):
         return lora_path
 
     def save_hf_model_and_tokenizer(self, state_dict: dict[str, torch.Tensor]):
+        if self.config.lora_only:
+            lora_path = self.save_lora_adapter(state_dict)
+            if lora_path is None:
+                raise RuntimeError("--lora-only was requested but the checkpoint contains no LoRA parameters")
+            print(f"Saving lora adapter to {lora_path}")
+            return
+
         auto_model_class = self.get_transformers_auto_model_class()
         with init_empty_weights():
             model = auto_model_class.from_config(

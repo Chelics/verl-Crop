@@ -1,6 +1,7 @@
 import unittest
 
 from news_crop_benchmark.protocol import (
+    parse_crop_fill_action,
     parse_crop_action,
     parse_crop_action_with_format,
     parse_layout_action,
@@ -10,6 +11,26 @@ from news_crop_benchmark.protocol import (
 
 
 class CropProtocolTests(unittest.TestCase):
+    def test_parses_exact_crop_fill_actions(self):
+        result = parse_crop_fill_action(
+            '{"target_ratio":1.59,"is_cropped":true,"is_filled":true,'
+            '"crop_box":[0.1,0.2,0.9,0.8],"fill_color":[12,34,56]}'
+        )
+
+        self.assertEqual(result.action.operation, "crop_fill")
+        self.assertEqual(result.action.crop_box, (0.1, 0.2, 0.9, 0.8))
+        self.assertEqual(result.action.fill_color, (12, 34, 56))
+
+    def test_rejects_invalid_crop_fill_conditional_fields(self):
+        invalid = (
+            '{"target_ratio":1.0,"is_cropped":false,"is_filled":false,"crop_box":[0,0,1,1],"fill_color":null}',
+            '{"target_ratio":1.0,"is_cropped":true,"is_filled":false,"crop_box":null,"fill_color":null}',
+            '{"target_ratio":1.0,"is_cropped":false,"is_filled":true,"crop_box":null,"fill_color":null}',
+            '{"target_ratio":1.0,"is_cropped":false,"is_filled":false,"crop_box":null,"fill_color":[0,0,0]}',
+        )
+        for response in invalid:
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                parse_crop_fill_action(response)
     def test_parses_exact_mode_decision(self):
         self.assertEqual(parse_mode_decision('{"mode":"crop"}').mode, "crop")
         self.assertEqual(parse_mode_decision('\n{"mode":"pad"}\n').mode, "pad")

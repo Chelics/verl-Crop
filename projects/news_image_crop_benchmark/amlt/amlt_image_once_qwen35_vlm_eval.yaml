@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
-description: Frozen Molmo-7B-D four-ratio crop evaluation with GPT visual judge
+description: Frozen Qwen3.5-9B four-ratio crop evaluation on CUDA-13-validated Feeds A100s
 
 target:
   service: manifold
-  name: Recall
+  name: Feeds
   workspace_name: CS-NewsAndFeeds-Singularity
 
 storage:
@@ -18,16 +18,18 @@ environment:
   setup:
     - python -m pip install uv
     - uv python install 3.12
-    - uv venv --seed --python 3.12 .venv-molmo
-    - uv pip install --python .venv-molmo/bin/python "torch==2.5.1" "torchvision==0.20.1" "transformers==4.48.1" "tokenizers==0.21.0" "vllm==0.7.0"
-    - uv pip install --python .venv-molmo/bin/python -e projects/news_image_crop_benchmark --no-deps
-    - uv pip install --python .venv-molmo/bin/python "Pillow==10.4.0" "pyarrow>=19" pyyaml "openai>=2" "azure-identity>=1.17" einops
+    - uv venv --seed --python 3.12 .venv-qwen35
+    - uv pip install --python .venv-qwen35/bin/python "vllm==0.24.0"
+    - uv pip install --python .venv-qwen35/bin/python -e .
+    - uv pip install --python .venv-qwen35/bin/python -e "projects/news_image_crop_benchmark[data,train,test,vlm]"
+    - uv pip uninstall --python .venv-qwen35/bin/python opencv-python
+    - uv pip install --python .venv-qwen35/bin/python --reinstall opencv-python-headless
 
 code:
-  local_dir: $CONFIG_DIR
+  local_dir: $CONFIG_DIR/../../..
 
 jobs:
-  - name: molmo-7b-d-preflight
+  - name: qwen35-image-once-preflight
     sku: 80G1-A100
     sla_tier: standard
     priority: high
@@ -37,8 +39,8 @@ jobs:
     command: |
       set -euo pipefail
       DATA_PATH=/mnt/blob_output/v-yukunban/crop-image-dataset/image_once_test.parquet
-      MODEL_PATH=/mnt/blob_output/HuggingFace/Models/allenai/Molmo-7B-D-0924
-      RUN_ID=molmo-7b-d-four-ratios-vlm-preflight-crop-first-v2
+      MODEL_PATH=/mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B
+      RUN_ID=qwen35-image-once-four-ratios-vlm-preflight-crop-first-v2
       OUTPUT_DIR=/mnt/blob_output/v-yukunban/crop-image-dataset/results/$$RUN_ID
       test -f "$$DATA_PATH"
       test -d "$$MODEL_PATH"
@@ -47,10 +49,10 @@ jobs:
       export CROP_VLM_MAX_RETRIES=2
       export CROP_VLM_FALLBACK_LABEL=5.0
       export CROP_VLM_PARSE_FALLBACK_LABEL=2.5
-      .venv-molmo/bin/python projects/news_image_crop_benchmark/scripts/evaluate_image_once_vlm.py \
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_image_once_vlm.py \
         --model "$$MODEL_PATH" \
-        --model-family molmo \
-        --model-name Molmo-7B-D \
+        --model-family qwen35 \
+        --model-name Qwen3.5-9B \
         --data "$$DATA_PATH" \
         --policy-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v2_crop_first.txt \
         --action-protocol percent-json-v1 \
@@ -68,7 +70,7 @@ jobs:
         --judge-workers 1 \
         --run-id "$$RUN_ID" \
         --resume
-      .venv-molmo/bin/python projects/news_image_crop_benchmark/scripts/check_eval_gate.py \
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/check_eval_gate.py \
         --summary "$$OUTPUT_DIR/summary.json" \
         --expected-tasks 16
       printf '%s\n' "$$OUTPUT_DIR" > "$$AMLT_OUTPUT_DIR/result_path.txt"
@@ -76,7 +78,7 @@ jobs:
       cp "$$OUTPUT_DIR/report.md" "$$AMLT_OUTPUT_DIR/report.md"
       cp "$$OUTPUT_DIR/_EVAL_COMPLETE.json" "$$AMLT_OUTPUT_DIR/_EVAL_COMPLETE.json"
 
-  - name: molmo-7b-d-full
+  - name: qwen35-image-once-vlm-eval
     sku: 80G8-A100
     sla_tier: standard
     priority: high
@@ -86,8 +88,8 @@ jobs:
     command: |
       set -euo pipefail
       DATA_PATH=/mnt/blob_output/v-yukunban/crop-image-dataset/image_once_test.parquet
-      MODEL_PATH=/mnt/blob_output/HuggingFace/Models/allenai/Molmo-7B-D-0924
-      RUN_ID=molmo-7b-d-four-ratios-vlm-full-crop-first-v2
+      MODEL_PATH=/mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B
+      RUN_ID=qwen35-image-once-four-ratios-vlm-crop-first-v2
       OUTPUT_DIR=/mnt/blob_output/v-yukunban/crop-image-dataset/results/$$RUN_ID
       test -f "$$DATA_PATH"
       test -d "$$MODEL_PATH"
@@ -96,10 +98,16 @@ jobs:
       export CROP_VLM_MAX_RETRIES=2
       export CROP_VLM_FALLBACK_LABEL=5.0
       export CROP_VLM_PARSE_FALLBACK_LABEL=2.5
-      .venv-molmo/bin/python projects/news_image_crop_benchmark/scripts/evaluate_image_once_vlm.py \
+      export CROP_VLM_IMAGE_SIZE=384
+      export CROP_VLM_IMAGE_FORMAT=JPEG
+      export CROP_VLM_JPEG_QUALITY=70
+      export CROP_VLM_MAX_OUTPUT_TOKENS=1024
+      export CROP_VLM_REASONING_EFFORT=low
+      export CROP_VLM_OUTPUT_VERBOSITY=low
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/evaluate_image_once_vlm.py \
         --model "$$MODEL_PATH" \
-        --model-family molmo \
-        --model-name Molmo-7B-D \
+        --model-family qwen35 \
+        --model-name Qwen3.5-9B \
         --data "$$DATA_PATH" \
         --policy-prompt-path projects/news_image_crop_benchmark/config/policy_prompts/v2_crop_first.txt \
         --action-protocol percent-json-v1 \
@@ -116,7 +124,7 @@ jobs:
         --judge-workers 2 \
         --run-id "$$RUN_ID" \
         --resume
-      .venv-molmo/bin/python projects/news_image_crop_benchmark/scripts/check_eval_gate.py \
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/check_eval_gate.py \
         --summary "$$OUTPUT_DIR/summary.json" \
         --expected-tasks 480
       printf '%s\n' "$$OUTPUT_DIR" > "$$AMLT_OUTPUT_DIR/result_path.txt"
@@ -124,3 +132,4 @@ jobs:
       cp "$$OUTPUT_DIR/summary.csv" "$$AMLT_OUTPUT_DIR/summary.csv"
       cp "$$OUTPUT_DIR/report.md" "$$AMLT_OUTPUT_DIR/report.md"
       cp "$$OUTPUT_DIR/_EVAL_COMPLETE.json" "$$AMLT_OUTPUT_DIR/_EVAL_COMPLETE.json"
+

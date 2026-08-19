@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from news_crop_benchmark.layout import edge_median_color, pad_image_to_ratio, render_layout_action
-from news_crop_benchmark.protocol import LayoutAction
+from news_crop_benchmark.layout import edge_median_color, pad_image_to_ratio, render_crop_fill_action, render_layout_action
+from news_crop_benchmark.protocol import CropFillAction, LayoutAction
 
 
 def test_edge_median_color_ignores_sparse_border_marks():
@@ -103,3 +103,45 @@ def test_unified_crop_never_expands_outside_selected_rectangle():
     assert 0 <= left < right <= 100
     assert 0 <= top < bottom <= 50
     assert result.source_box == (0, 0, 100, 50)
+
+
+def test_action_v4_crop_uses_predicted_box_without_secondary_crop():
+    source = Image.new("RGB", (200, 100), color="white")
+    action = CropFillAction(1.0, True, False, (0.25, 0.0, 0.75, 1.0), None)
+
+    result = render_crop_fill_action(source, action, 1.0)
+
+    assert result.operation == "crop"
+    assert result.source_box == (50, 0, 150, 100)
+    assert result.image.size == (100, 100)
+    assert result.padding_fraction == 0.0
+
+
+def test_action_v4_crop_fill_uses_predicted_color():
+    source = Image.new("RGB", (200, 100), color="white")
+    action = CropFillAction(1.91, True, True, (0.25, 0.0, 0.75, 1.0), (12, 34, 56))
+
+    result = render_crop_fill_action(source, action, 1.91)
+
+    assert result.operation == "crop_fill"
+    assert result.background_color == (12, 34, 56)
+    assert result.image.getpixel((0, 0)) == (12, 34, 56)
+
+
+def test_action_v4_fill_and_keep_retain_full_source():
+    source = Image.new("RGB", (100, 120), color=(20, 40, 60))
+    fill = render_crop_fill_action(
+        source,
+        CropFillAction(1.0, False, True, None, (1, 2, 3)),
+        1.0,
+    )
+    keep = render_crop_fill_action(
+        Image.new("RGB", (100, 100), color=(20, 40, 60)),
+        CropFillAction(1.0, False, False, None, None),
+        1.0,
+    )
+
+    assert fill.source_box == (0, 0, 100, 120)
+    assert fill.background_color == (1, 2, 3)
+    assert keep.source_box == (0, 0, 100, 100)
+    assert keep.image.size == (100, 100)

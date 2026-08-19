@@ -23,7 +23,7 @@ environment:
     - uv pip install --python .venv-original-crop-judge/bin/python "Pillow>=10" "pyarrow>=19" "openai>=2" "azure-identity>=1.17"
 
 code:
-  local_dir: $CONFIG_DIR
+  local_dir: $CONFIG_DIR/../../..
 
 jobs:
   - name: original-crop-judge-v1

@@ -309,6 +309,15 @@ def run_generation_worker(
 
     adapter = PolicyModelAdapter.create(args.model_family)
     renderer = adapter.load_renderer(model_path)
+    lora_adapter_path = getattr(args, "lora_adapter_path", None)
+    lora_rank = getattr(args, "lora_rank", 32)
+    lora_request = None
+    lora_kwargs = {}
+    if lora_adapter_path is not None:
+        from vllm.lora.request import LoRARequest
+
+        lora_kwargs = {"enable_lora": True, "max_lora_rank": lora_rank}
+        lora_request = LoRARequest("news-crop-sft", 1, str(lora_adapter_path))
     llm = LLM(
         model=str(model_path),
         tensor_parallel_size=args.tensor_parallel_size,
@@ -318,6 +327,7 @@ def run_generation_worker(
         max_num_seqs=args.max_num_seqs,
         enforce_eager=True,
         limit_mm_per_prompt={"image": 1},
+        **lora_kwargs,
         **adapter.llm_kwargs(internvl_max_dynamic_patch=args.internvl_max_dynamic_patch),
     )
     write_json_atomic(
@@ -325,6 +335,8 @@ def run_generation_worker(
         {
             "rank": rank,
             "gpu_devices": gpu_devices,
+            "lora_adapter_path": str(lora_adapter_path) if lora_adapter_path is not None else None,
+            "lora_rank": lora_rank if lora_adapter_path is not None else None,
             **adapter.runtime_metadata(renderer),
             "vllm_version": package_version("vllm"),
             "transformers_version": package_version("transformers"),
@@ -369,7 +381,14 @@ def run_generation_worker(
                     seed=attempt_seed,
                     **adapter.sampling_kwargs(renderer),
                 )
-                outputs = llm.generate(requests, sampling_params=sampling_params)
+                if lora_request is None:
+                    outputs = llm.generate(requests, sampling_params=sampling_params)
+                else:
+                    outputs = llm.generate(
+                        requests,
+                        sampling_params=sampling_params,
+                        lora_request=lora_request,
+                    )
                 for task, request_output in zip(task_batch, outputs, strict=True):
                     current_task_id = task["task_id"]
                     response = request_output.outputs[0].text if request_output.outputs else ""
@@ -1176,6 +1195,8 @@ def parse_args() -> argparse.Namespace:
         description="Evaluate raw image_once Parquet data with a vision-language policy and GPT visual judge."
     )
     parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--lora-adapter-path", type=Path)
+    parser.add_argument("--lora-rank", type=int, default=32)
     parser.add_argument("--model-family", choices=MODEL_FAMILIES, required=True)
     parser.add_argument("--model-name", required=True)
     parser.add_argument("--data", type=Path, required=True)
@@ -1225,6 +1246,8 @@ def parse_args() -> argparse.Namespace:
             raise ValueError(f"{name.replace('_', '-')} must be positive")
     if args.max_images is not None and args.max_images <= 0:
         raise ValueError("max-images must be positive")
+    if args.lora_adapter_path is not None and args.lora_rank <= 0:
+        raise ValueError("lora-rank must be positive when lora-adapter-path is set")
     if args.judge_only_resume and not args.resume:
         raise ValueError("--judge-only-resume requires --resume")
     return args
@@ -1238,6 +1261,12 @@ def main() -> None:
             raise FileNotFoundError(path)
     if args.policy_prompt_path is not None and not args.policy_prompt_path.is_file():
         raise FileNotFoundError(args.policy_prompt_path)
+    if args.lora_adapter_path is not None:
+        if not args.lora_adapter_path.is_dir():
+            raise FileNotFoundError(args.lora_adapter_path)
+        for filename in ("adapter_config.json", "adapter_model.safetensors"):
+            if not (args.lora_adapter_path / filename).is_file():
+                raise FileNotFoundError(args.lora_adapter_path / filename)
     args.output_dir = args.output_dir.resolve()
     policy_prompt_template = load_policy_prompt_template(args.policy_prompt_path)
     config = {
@@ -1263,6 +1292,14 @@ def main() -> None:
             sha256_file(args.model / "model.safetensors.index.json")
             if (args.model / "model.safetensors.index.json").is_file()
             else None
+        ),
+        "lora_adapter_path": str(args.lora_adapter_path.resolve()) if args.lora_adapter_path else None,
+        "lora_rank": args.lora_rank if args.lora_adapter_path else None,
+        "lora_adapter_config_sha256": (
+            sha256_file(args.lora_adapter_path / "adapter_config.json") if args.lora_adapter_path else None
+        ),
+        "lora_adapter_model_sha256": (
+            sha256_file(args.lora_adapter_path / "adapter_model.safetensors") if args.lora_adapter_path else None
         ),
         "data": str(args.data.resolve()),
         "data_sha256": sha256_file(args.data),

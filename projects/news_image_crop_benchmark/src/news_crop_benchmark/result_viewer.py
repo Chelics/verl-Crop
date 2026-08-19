@@ -61,7 +61,7 @@ class ResultDataset:
 
     @property
     def modes(self) -> list[str]:
-        return self._unique_values(row.get("predicted_mode") for row in self.rows)
+        return self._unique_values(self._mode(row) for row in self.rows)
 
     @property
     def statuses(self) -> list[str]:
@@ -79,11 +79,12 @@ class ResultDataset:
         filters = {
             "target_ratio": ratio,
             "judge_label": tier,
-            "predicted_mode": mode,
             "generation_status": status,
         }
 
         def matches(row: dict[str, Any]) -> bool:
+            if mode is not None and self._mode(row) != mode:
+                return False
             if any(
                 expected is not None and str(row.get(field)) != expected
                 for field, expected in filters.items()
@@ -157,14 +158,24 @@ class ResultDataset:
     @staticmethod
     def _candidate_caption(row: dict[str, Any]) -> str:
         parts = [f"Ratio {row.get('target_ratio', 'N/A')}"]
-        if row.get("predicted_mode"):
-            parts.append(str(row["predicted_mode"]).upper())
+        mode = ResultDataset._mode(row)
+        if mode:
+            parts.append(mode.upper())
         if row.get("judge_label") is not None:
             parts.append(f"Tier {row['judge_label']}")
         rules = ResultDataset._as_list(row.get("judge_rules"))
         if rules:
             parts.append(", ".join(str(rule) for rule in rules))
+        if row.get("ratio_compliant") is not None:
+            parts.append("RATIO OK" if row["ratio_compliant"] else "RATIO MISMATCH")
+        if row.get("output_ratio_error") is not None:
+            parts.append(f"Error {float(row['output_ratio_error']) * 100:.3f}%")
         return " | ".join(parts)
+
+    @staticmethod
+    def _mode(row: dict[str, Any]) -> str | None:
+        value = row.get("predicted_mode") or row.get("layout_operation") or row.get("operation")
+        return str(value) if value not in (None, "") else None
 
 
 class ResultCollection:
@@ -262,14 +273,20 @@ def build_app(source: ResultCollection | ResultDataset) -> Any:
         )
         table = []
         for row in view["rows"]:
+            quality = row.get("judge_label")
+            if quality is None and row.get("ratio_compliant") is not None:
+                quality = "yes" if row["ratio_compliant"] else "no"
+            notes = ", ".join(str(rule) for rule in dataset._as_list(row.get("judge_rules")))
+            if not notes and row.get("output_ratio_error") is not None:
+                notes = f"ratio error {float(row['output_ratio_error']) * 100:.3f}%"
             table.append(
                 [
                     row.get("target_ratio"),
-                    row.get("predicted_mode") or "",
+                    dataset._mode(row) or "",
                     row.get("generation_status") or "",
-                    row.get("judge_label") if row.get("judge_label") is not None else "",
-                    ", ".join(str(rule) for rule in dataset._as_list(row.get("judge_rules"))),
-                    row.get("total_attempt_count", ""),
+                    quality if quality is not None else "",
+                    notes,
+                    row.get("total_attempt_count", row.get("attempt_count", "")),
                 ]
             )
         return (
@@ -357,7 +374,7 @@ def build_app(source: ResultCollection | ResultDataset) -> Any:
             )
         details = gr.Dataframe(
             value=initial[6],
-            headers=["Ratio", "Mode", "Generation", "Tier", "Rules", "Attempts"],
+            headers=["Ratio", "Mode", "Generation", "Tier / Ratio OK", "Rules / Ratio Error", "Attempts"],
             datatype=["number", "str", "str", "str", "str", "number"],
             interactive=False,
             label="Task details",
@@ -438,6 +455,6 @@ def _summary_markdown(summary: dict[str, Any]) -> str:
         f"**{html.escape(key.replace('_', ' ').title())}:** {html.escape(str(value))}"
         for key, value in metrics
     )
-    model_name = html.escape(str(summary.get("model_name", "Evaluation Results")))
+    model_name = html.escape(str(summary.get("model_name") or summary.get("run_id") or "Evaluation Results"))
     run_id = html.escape(str(summary.get("run_id", "")))
     return f"# {model_name}\n`{run_id}`\n\n{metric_text}"
