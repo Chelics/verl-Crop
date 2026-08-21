@@ -10,13 +10,19 @@ VAL_FILE=${VAL_FILE:-/mnt/blob_output/v-yukunban/crop-image-dataset/sft/cropped-
 NDEVICES_PER_NODE=${NDEVICES_PER_NODE:-4}
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-16}
 MICRO_BATCH_SIZE_PER_GPU=${MICRO_BATCH_SIZE_PER_GPU:-1}
+USE_DYNAMIC_BSZ=${USE_DYNAMIC_BSZ:-True}
 MAX_LENGTH=${MAX_LENGTH:-4096}
 MAX_TOKEN_LEN_PER_GPU=${MAX_TOKEN_LEN_PER_GPU:-8192}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-5}
 TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-null}
 LEARNING_RATE=${LEARNING_RATE:-5e-5}
+WARMUP_RATIO=${WARMUP_RATIO:-0.10}
+WEIGHT_DECAY=${WEIGHT_DECAY:-0.01}
+ADAM_BETA1=${ADAM_BETA1:-0.9}
+ADAM_BETA2=${ADAM_BETA2:-0.999}
 LORA_RANK=${LORA_RANK:-32}
 LORA_ALPHA=${LORA_ALPHA:-64}
+LORA_DROPOUT=${LORA_DROPOUT:-0.0}
 LORA_TARGET_MODULES=${LORA_TARGET_MODULES:-all-linear}
 LORA_EXCLUDE_MODULES=${LORA_EXCLUDE_MODULES:-'.*visual.*'}
 SAVE_FREQ=${SAVE_FREQ:-after_each_epoch}
@@ -27,12 +33,16 @@ EXPERIMENT_NAME=${EXPERIMENT_NAME:-qwen35_cropped_v3_action_v4}
 OUTPUT_DIR=${OUTPUT_DIR:-/mnt/blob_output/v-yukunban/checkpoints/${PROJECT_NAME}/${EXPERIMENT_NAME}}
 PRINT_CONFIG=${PRINT_CONFIG:-0}
 
-for path in "${MODEL_PATH}" "${TRAIN_FILE}" "${VAL_FILE}"; do
+for path in "${MODEL_PATH}" "${TRAIN_FILE}"; do
     if [[ ! -e "${path}" ]]; then
         echo "Required path does not exist: ${path}" >&2
         exit 1
     fi
 done
+if [[ "${VAL_FILE}" != null && ! -e "${VAL_FILE}" ]]; then
+    echo "Required path does not exist: ${VAL_FILE}" >&2
+    exit 1
+fi
 
 ARGS=(
     data.train_files="${TRAIN_FILE}"
@@ -43,7 +53,7 @@ ARGS=(
     data.max_token_len_per_gpu=${MAX_TOKEN_LEN_PER_GPU}
     data.pad_mode=no_padding
     data.truncation=error
-    data.use_dynamic_bsz=True
+    data.use_dynamic_bsz=${USE_DYNAMIC_BSZ}
     data.balance_dp_token=False
     data.num_workers=4
     +data.image_key=images
@@ -56,7 +66,8 @@ ARGS=(
     +model.override_config.attn_implementation=sdpa
     model.lora_rank=${LORA_RANK}
     model.lora_alpha=${LORA_ALPHA}
-    model.target_modules=${LORA_TARGET_MODULES}
+    model.lora_dropout=${LORA_DROPOUT}
+    "model.target_modules='${LORA_TARGET_MODULES}'"
     model.exclude_modules="${LORA_EXCLUDE_MODULES}"
     engine=fsdp
     engine.strategy=fsdp2
@@ -64,9 +75,10 @@ ARGS=(
     engine.use_torch_compile=False
     optim=fsdp
     optim.lr=${LEARNING_RATE}
-    optim.lr_warmup_steps_ratio=0.10
+    optim.lr_warmup_steps_ratio=${WARMUP_RATIO}
     optim.lr_scheduler_type=cosine
-    optim.weight_decay=0.01
+    optim.weight_decay=${WEIGHT_DECAY}
+    optim.betas="[${ADAM_BETA1},${ADAM_BETA2}]"
     trainer.seed=42
     trainer.n_gpus_per_node=${NDEVICES_PER_NODE}
     trainer.nnodes=1

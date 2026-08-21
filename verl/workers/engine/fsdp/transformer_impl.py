@@ -337,6 +337,7 @@ class FSDPEngine(BaseEngine):
                 "task_type": TaskType.CAUSAL_LM,
                 "r": self.model_config.lora_rank,
                 "lora_alpha": self.model_config.lora_alpha,
+                "lora_dropout": self.model_config.lora_dropout,
                 "target_modules": convert_to_regular_types(self.model_config.target_modules),
                 "target_parameters": convert_to_regular_types(self.model_config.target_parameters),
                 "exclude_modules": convert_to_regular_types(self.model_config.exclude_modules),

@@ -45,6 +45,9 @@ lora_rank: 0
 # LoRA scaling factor
 lora_alpha: 16
 
+# LoRA dropout probability
+lora_dropout: 0.0
+
 # Target modules for LoRA adaptation
 target_modules: all-linear
 

@@ -247,3 +247,22 @@ def _parse_crop_fill_payload(payload_text: str) -> CropFillAction:
 def parse_crop_fill_action(response: str) -> CropFillParseResult:
     """Parse the exact action-v4 JSON protocol without Markdown recovery."""
     return CropFillParseResult(action=_parse_crop_fill_payload(response.strip()), strict_format=True)
+
+
+def parse_crop_fill_detail_action(response: str) -> CropFillParseResult:
+    """Parse the exact six-field Swift detail protocol without Markdown recovery."""
+    try:
+        payload = json.loads(response.strip())
+    except json.JSONDecodeError as error:
+        raise ValueError("response must be exactly one valid JSON object") from error
+    expected_fields = ("target_ratio", "is_cropped", "is_filled", "crop_box", "fill_color", "description")
+    if not isinstance(payload, dict) or tuple(payload) != expected_fields:
+        raise ValueError(f"crop/fill detail payload fields must be ordered as {expected_fields}")
+    description = payload["description"]
+    if not isinstance(description, str) or not description.strip():
+        raise ValueError("description must be non-empty text")
+    action_payload = {field: payload[field] for field in expected_fields[:-1]}
+    return CropFillParseResult(
+        action=_parse_crop_fill_payload(json.dumps(action_payload, ensure_ascii=False, separators=(",", ":"))),
+        strict_format=True,
+    )

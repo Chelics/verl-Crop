@@ -8,6 +8,7 @@ import html
 import importlib.metadata
 import json
 import os
+import re
 import threading
 import time
 from collections import Counter
@@ -24,11 +25,13 @@ from PIL import Image, ImageOps
 from news_crop_benchmark.geometry import TARGET_RATIOS
 from news_crop_benchmark.layout import render_crop_fill_action
 from news_crop_benchmark.policy_model_adapter import PolicyModelAdapter
-from news_crop_benchmark.protocol import CropFillAction, parse_crop_fill_action
+from news_crop_benchmark.protocol import CropFillAction, parse_crop_fill_action, parse_crop_fill_detail_action
 
 SOURCE_COLUMNS = ("image_id", "original_image", "title", "ImageCaption")
 FINAL_STATUSES = {"valid", "retry_exhausted"}
 RATIO_TOLERANCE = 0.002
+TITLE_PATTERN = re.compile(r"^News headline:\s*(.*)$", re.MULTILINE)
+CAPTION_PATTERN = re.compile(r"^Image caption:\s*(.*)$", re.MULTILINE)
 
 
 def package_version(name: str) -> str:
@@ -164,19 +167,125 @@ def load_and_materialize_tasks(
     return tasks, manifest
 
 
+def load_swift_message_tasks(
+    data_path: Path,
+    output_dir: Path,
+    max_images: int | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    required = {"messages", "images", "image_id", "source_index", "target_ratio"}
+    parquet = pq.ParquetFile(data_path)
+    missing = sorted(required - set(parquet.schema_arrow.names))
+    if missing:
+        raise ValueError(f"Swift test data is missing required columns: {missing}")
+    rows = pq.read_table(data_path, columns=sorted(required), pre_buffer=False).to_pylist()
+    selected_ids = []
+    for row in rows:
+        image_id = str(row["image_id"])
+        if image_id not in selected_ids:
+            selected_ids.append(image_id)
+    if max_images is not None:
+        selected_ids = selected_ids[:max_images]
+    selected_id_set = set(selected_ids)
+    rows = [row for row in rows if str(row["image_id"]) in selected_id_set]
+
+    preview_dir = output_dir / "renders" / "originals"
+    image_metadata = {}
+    manifest = []
+    tasks = []
+    seen_keys = set()
+    for row_index, row in enumerate(rows):
+        image_id = str(row["image_id"])
+        messages = row["messages"]
+        images = row["images"]
+        if len(messages) != 1 or messages[0]["role"] != "user" or not isinstance(messages[0]["content"], str):
+            raise ValueError(f"row {row_index} must contain exactly one user message")
+        prompt = messages[0]["content"]
+        if prompt.count("<image>") != 1:
+            raise ValueError(f"row {row_index} must contain exactly one image placeholder")
+        if not isinstance(images, list) or len(images) != 1 or not isinstance(images[0], str):
+            raise ValueError(f"row {row_index} must contain exactly one image path")
+        image_path = Path(images[0])
+        if not image_path.is_file():
+            raise FileNotFoundError(image_path)
+        ratio = float(row["target_ratio"])
+        key = (image_id, ratio)
+        if key in seen_keys:
+            raise ValueError(f"duplicate Swift test task: {key}")
+        seen_keys.add(key)
+        title_match = TITLE_PATTERN.search(prompt)
+        caption_match = CAPTION_PATTERN.search(prompt)
+        if title_match is None or caption_match is None:
+            raise ValueError(f"row {row_index} prompt is missing headline or caption")
+
+        if image_id not in image_metadata:
+            with Image.open(image_path) as source:
+                original = ImageOps.exif_transpose(source).convert("RGB")
+            try:
+                if normalized_pixel_hash(original) != image_id:
+                    raise ValueError(f"normalized pixel hash does not match image_id: {image_id}")
+                preview_path = preview_dir / f"{image_id}.jpg"
+                preview = original.copy()
+                if max(preview.size) > 1200:
+                    preview.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+                save_image_atomic(preview, preview_path, format_name="JPEG", quality=90, optimize=True)
+                preview.close()
+                image_metadata[image_id] = {
+                    "image_width": original.width,
+                    "image_height": original.height,
+                    "image_path": str(image_path),
+                    "original_render_path": preview_path.relative_to(output_dir).as_posix(),
+                }
+                manifest.append(
+                    {
+                        "source_index": int(row["source_index"]),
+                        "image_id": image_id,
+                        "title": title_match.group(1).strip(),
+                        "caption": caption_match.group(1).strip(),
+                        **image_metadata[image_id],
+                    }
+                )
+            finally:
+                original.close()
+        metadata = image_metadata[image_id]
+        tasks.append(
+            {
+                "task_id": task_id(image_id, ratio),
+                "source_index": int(row["source_index"]),
+                "image_id": image_id,
+                "title": title_match.group(1).strip(),
+                "caption": caption_match.group(1).strip(),
+                "target_ratio": ratio,
+                "prompt": prompt,
+                **metadata,
+            }
+        )
+    expected_tasks = len(selected_ids) * len(TARGET_RATIOS)
+    if len(tasks) != expected_tasks:
+        raise ValueError(f"Swift test data contains {len(tasks)} tasks, expected {expected_tasks}")
+    return tasks, manifest
+
+
 def progress_path(output_dir: Path, current_task_id: str) -> Path:
     return output_dir / "progress" / f"{current_task_id}.json"
 
 
-def build_retry_prompt(prompt: str, attempts: Sequence[dict[str, Any]]) -> str:
+def build_retry_prompt(prompt: str, attempts: Sequence[dict[str, Any]], response_protocol: str) -> str:
     if not attempts:
         return prompt
     error = attempts[-1].get("parse_error") or "output did not satisfy the action-v4 protocol"
+    fields = "six-field" if response_protocol == "detail-v4" else "five-field"
+    description = " and non-empty description" if response_protocol == "detail-v4" else ""
     return (
         f"{prompt}\n\nYour previous output was rejected by the validator: {error}\n"
-        "Generate a new answer containing only the required five-field JSON object. Recheck the target ratio, "
-        "boolean flags, conditional null fields, normalized crop box, and integer RGB fill color."
+        f"Generate a new answer containing only the required {fields} JSON object. Recheck the target ratio, "
+        f"boolean flags, conditional null fields, normalized crop box, integer RGB fill color{description}."
     )
+
+
+def parse_response(response: str, response_protocol: str):
+    if response_protocol == "detail-v4":
+        return parse_crop_fill_detail_action(response)
+    return parse_crop_fill_action(response)
 
 
 def action_record(action: CropFillAction) -> dict[str, Any]:
@@ -256,7 +365,9 @@ def generate_actions(
                     requests.append(
                         adapter.build_request(
                             renderer,
-                            build_retry_prompt(task["prompt"], attempts_by_id[task["task_id"]]),
+                            build_retry_prompt(
+                                task["prompt"], attempts_by_id[task["task_id"]], args.response_protocol
+                            ),
                             image,
                             image_max_pixels=args.image_max_pixels,
                             image_min_pixels=args.image_min_pixels,
@@ -280,7 +391,7 @@ def generate_actions(
                         "parse_error": None,
                     }
                     try:
-                        action = parse_crop_fill_action(response).action
+                        action = parse_response(response, args.response_protocol).action
                         if not abs(action.target_ratio - task["target_ratio"]) <= 1e-6:
                             raise ValueError(
                                 f"target_ratio differs from task: {action.target_ratio} != {task['target_ratio']}"
@@ -380,7 +491,7 @@ def generate_actions_transformers(
             with Image.open(task["image_path"]) as source:
                 image = ImageOps.exif_transpose(source).convert("RGB")
             try:
-                prompt = build_retry_prompt(task["prompt"], attempts_by_id[current_id])
+                prompt = build_retry_prompt(task["prompt"], attempts_by_id[current_id], args.response_protocol)
                 messages = [
                     {
                         "role": "user",
@@ -428,7 +539,7 @@ def generate_actions_transformers(
                 "generated_tokens": int(generated.shape[-1] - input_length),
             }
             try:
-                action = parse_crop_fill_action(response).action
+                action = parse_response(response, args.response_protocol).action
                 if not abs(action.target_ratio - task["target_ratio"]) <= 1e-6:
                     raise ValueError(f"target_ratio differs from task: {action.target_ratio} != {task['target_ratio']}")
             except ValueError as error:
@@ -463,7 +574,9 @@ def generate_actions_transformers(
         raise RuntimeError(f"generation left {len(active)} tasks unfinished")
 
 
-def render_results(tasks: list[dict[str, Any]], output_dir: Path) -> list[dict[str, Any]]:
+def render_results(
+    tasks: list[dict[str, Any]], output_dir: Path, response_protocol: str = "action-v4"
+) -> list[dict[str, Any]]:
     details = []
     for task in tasks:
         progress = json.loads(progress_path(output_dir, task["task_id"]).read_text(encoding="utf-8"))
@@ -506,7 +619,7 @@ def render_results(tasks: list[dict[str, Any]], output_dir: Path) -> list[dict[s
             "ratio_compliant": False,
         }
         if progress["status"] == "valid":
-            action = parse_crop_fill_action(valid_attempt["response"]).action
+            action = parse_response(valid_attempt["response"], response_protocol).action
             detail.update(action_record(action))
             with Image.open(task["image_path"]) as source:
                 original = ImageOps.exif_transpose(source).convert("RGB")
@@ -667,7 +780,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora-adapter-path", type=Path, required=True)
     parser.add_argument("--lora-rank", type=int, default=32)
     parser.add_argument("--data", type=Path, required=True)
-    parser.add_argument("--prompt-template", type=Path, required=True)
+    parser.add_argument("--prompt-template", type=Path)
+    parser.add_argument("--data-format", choices=("raw-image-once", "swift-messages"), default="raw-image-once")
+    parser.add_argument("--response-protocol", choices=("action-v4", "detail-v4"), default="action-v4")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--backend", choices=("vllm", "transformers"), default="vllm")
@@ -690,6 +805,10 @@ def parse_args() -> argparse.Namespace:
             raise ValueError(f"{name.replace('_', '-')} must be positive")
     if args.max_images is not None and args.max_images <= 0:
         raise ValueError("max-images must be positive")
+    if args.data_format == "raw-image-once" and args.prompt_template is None:
+        raise ValueError("prompt-template is required for raw-image-once data")
+    if args.data_format == "swift-messages" and args.response_protocol != "detail-v4":
+        raise ValueError("swift-messages data requires response-protocol=detail-v4")
     if not 0 <= args.temperature:
         raise ValueError("temperature must be non-negative")
     if not 0 < args.top_p <= 1:
@@ -699,13 +818,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    for path in (args.model, args.lora_adapter_path, args.data, args.prompt_template):
+    for path in (args.model, args.lora_adapter_path, args.data):
         if not path.exists():
             raise FileNotFoundError(path)
+    if args.prompt_template is not None and not args.prompt_template.exists():
+        raise FileNotFoundError(args.prompt_template)
     for filename in ("adapter_config.json", "adapter_model.safetensors"):
         if not (args.lora_adapter_path / filename).is_file():
             raise FileNotFoundError(args.lora_adapter_path / filename)
-    template = load_prompt_template(args.prompt_template)
+    template = load_prompt_template(args.prompt_template) if args.prompt_template is not None else None
     args.output_dir = args.output_dir.resolve()
     config = {
         "run_id": args.run_id,
@@ -713,6 +834,8 @@ def main() -> None:
         "backend": args.backend,
         "quality_metrics_available": False,
         "judge_enabled": False,
+        "data_format": args.data_format,
+        "response_protocol": args.response_protocol,
         "model": str(args.model.resolve()),
         "model_config_sha256": sha256_file(args.model / "config.json"),
         "lora_adapter_path": str(args.lora_adapter_path.resolve()),
@@ -720,8 +843,8 @@ def main() -> None:
         "lora_adapter_model_sha256": sha256_file(args.lora_adapter_path / "adapter_model.safetensors"),
         "data": str(args.data.resolve()),
         "data_sha256": sha256_file(args.data),
-        "prompt_template": str(args.prompt_template.resolve()),
-        "prompt_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest(),
+        "prompt_template": str(args.prompt_template.resolve()) if args.prompt_template is not None else None,
+        "prompt_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest() if template is not None else None,
         "target_ratios": list(TARGET_RATIOS),
         "max_images": args.max_images,
         "max_attempts": args.max_attempts,
@@ -737,7 +860,10 @@ def main() -> None:
         "max_num_seqs": args.max_num_seqs,
     }
     prepare_output(args.output_dir, config, args.resume)
-    tasks, manifest = load_and_materialize_tasks(args.data, args.output_dir, template, args.max_images)
+    if args.data_format == "swift-messages":
+        tasks, manifest = load_swift_message_tasks(args.data, args.output_dir, args.max_images)
+    else:
+        tasks, manifest = load_and_materialize_tasks(args.data, args.output_dir, template, args.max_images)
     (args.output_dir / "source_manifest.jsonl").write_text(
         "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in manifest),
         encoding="utf-8",
@@ -746,7 +872,7 @@ def main() -> None:
         generate_actions_transformers(tasks, args.output_dir, args.model, args.lora_adapter_path, args)
     else:
         generate_actions(tasks, args.output_dir, args.model, args.lora_adapter_path, args)
-    details = render_results(tasks, args.output_dir)
+    details = render_results(tasks, args.output_dir, args.response_protocol)
     summary = {
         "run_id": args.run_id,
         "protocol": "crop-fill-action-v4-no-judge-v1",

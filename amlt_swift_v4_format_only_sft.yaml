@@ -1,0 +1,109 @@
+# yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
+# ^ Update with: amlt schema add <file>  |  VS Code: Run Task > amlt
+# Amulet config file. Docs: https://amulet-docs.azurewebsites.net/config_file.html
+# This config performs data and processor checks only. It does not train.
+description: Validate a format-only verl conversion of the exact Swift v4 six-field SFT data
+
+target:
+  service: manifold  # run "amlt target list manifold" to see available targets
+  name: Feeds
+  workspace_name: CS-NewsAndFeeds-Singularity  # the Singularity workspace to submit to
+
+storage:
+  blob_output:
+    storage_account_name: csnewsandfeeds4150361735
+    container_name: unium
+    mount_dir: /mnt/blob_output
+    is_output: true
+
+# REQUIRED: Docker environment
+# Manifold jobs authenticate to Azure (storage, ACR) via a User-Assigned
+# Managed Identity, auto-detected from the workspace in most cases. Only set
+# _AZUREML_SINGULARITY_JOB_UAI in 'env' below if auto-detection is ambiguous
+# (multiple non-primary identities); run 'amlt run' to see the available list.
+environment:
+  image: amlt-sing/acpt-torch2.8.x-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - python -m pip install uv
+    - uv python install 3.12
+    - uv venv --seed --python 3.12 .venv-qwen35
+    - uv pip install --python .venv-qwen35/bin/python "torch==2.13.0" "torchvision==0.28.0" "transformers==5.10.4" -e .
+    - uv pip install --python .venv-qwen35/bin/python -e "projects/news_image_crop_benchmark[data,train,test]"
+    - .venv-qwen35/bin/python -c "import torch, torchvision, transformers; print(torch.__version__, torchvision.__version__, transformers.__version__)"
+    - .venv-qwen35/bin/python -c "import verl.trainer.sft_trainer; print('sft-import-ok')"
+
+# REQUIRED: code to run. Set local_dir to your code directory � it must
+# exist and be non-empty. $CONFIG_DIR = directory of this file; the default
+# $CONFIG_DIR/src means: put your code in a 'src' folder next to this file.
+code:
+  local_dir: $CONFIG_DIR
+
+# REQUIRED: Jobs to run. SKU examples: C1 (1 CPU), G1 (1 GPU), G4 (4 GPUs), G8-V100 (8 V100s)
+# Commands run from the uploaded code directory (code.local_dir).
+# 'command' is a shell script block (|): one line per step, e.g. python train.py --lr 0.01
+# Write outputs to $AMLT_OUTPUT_DIR for retrieval with 'amlt results'.
+# Use $$VAR to pass env vars literally ($VAR is interpolated at submission time).
+jobs:
+  - name: swift-v4-format-only-preflight
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: /subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895/resourceGroups/AMLStudio/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml
+    command: |
+      set -euo pipefail
+      SOURCE=/mnt/blob_output/v-shaoboliu/verl-Crop/swift-crop/crop_detail_sft_v4.parquet
+      MODEL=/mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B
+      DATA_DIR=$$AMLT_OUTPUT_DIR/data
+      TRAIN_FILE=$$DATA_DIR/train.parquet
+      VAL_FILE=$$DATA_DIR/validation.parquet
+      test -f "$$SOURCE"
+      test -d "$$MODEL"
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/convert_swift_sft_to_verl.py \
+        --input "$$SOURCE" \
+        --output-dir "$$DATA_DIR" \
+        --validation-ratio 0.01 \
+        --seed 42 \
+        --report "$$AMLT_OUTPUT_DIR/conversion_report.json"
+      .venv-qwen35/bin/python projects/news_image_crop_benchmark/scripts/validate_swift_format_only_sft.py \
+        --source "$$SOURCE" \
+        --train "$$TRAIN_FILE" \
+        --validation "$$VAL_FILE" \
+        --model "$$MODEL" \
+        --max-length 2048 \
+        --max-samples 32 \
+        --output "$$AMLT_OUTPUT_DIR/processor_validation.json"
+      .venv-qwen35/bin/python -m pytest projects/news_image_crop_benchmark/tests/test_convert_swift_sft_to_verl.py \
+        projects/news_image_crop_benchmark/tests/test_validate_swift_format_only_sft.py \
+        projects/news_image_crop_benchmark/tests/test_crop_fill_sft_launcher.py -q \
+        | tee "$$AMLT_OUTPUT_DIR/focused_tests.txt"
+      PYTHON_BIN=.venv-qwen35/bin/python \
+      PRINT_CONFIG=1 \
+      MODEL_PATH="$$MODEL" \
+      TRAIN_FILE="$$TRAIN_FILE" \
+      VAL_FILE=null \
+      NDEVICES_PER_NODE=8 \
+      TRAIN_BATCH_SIZE=32 \
+      MICRO_BATCH_SIZE_PER_GPU=4 \
+      USE_DYNAMIC_BSZ=False \
+      MAX_LENGTH=2048 \
+      TOTAL_EPOCHS=9 \
+      TOTAL_TRAINING_STEPS=480 \
+      LEARNING_RATE=1e-4 \
+      WARMUP_RATIO=0.05 \
+      WEIGHT_DECAY=0.1 \
+      ADAM_BETA1=0.9 \
+      ADAM_BETA2=0.95 \
+      LORA_RANK=8 \
+      LORA_ALPHA=32 \
+      LORA_DROPOUT=0.05 \
+      LORA_TARGET_MODULES='^(model\.language_model(?=\.).*\.(v_proj|down_proj|in_proj_qkv|gate_proj|in_proj_a|o_proj|up_proj|out_proj|q_proj|in_proj_b|in_proj_z|k_proj))$$' \
+      LORA_EXCLUDE_MODULES=null \
+      SAVE_FREQ=50 \
+      TEST_FREQ=-1 \
+      OUTPUT_DIR="$$AMLT_OUTPUT_DIR/config-only-checkpoint" \
+      EXPERIMENT_NAME=qwen35_swift_v4_format_only_config \
+      bash projects/news_image_crop_benchmark/run_qwen3_5_9b_crop_fill_sft.sh \
+        > "$$AMLT_OUTPUT_DIR/resolved_config.yaml"
+

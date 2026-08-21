@@ -186,6 +186,7 @@ def test_transformers_backend_loads_peft_and_writes_valid_progress(tmp_path):
         top_p=1.0,
         seed=42,
         lora_rank=32,
+        response_protocol="action-v4",
     )
     task = {
         "task_id": "image__ratio_1",
@@ -208,3 +209,38 @@ def test_transformers_backend_loads_peft_and_writes_valid_progress(tmp_path):
     assert progress["action"]["operation"] == "keep"
     assert observed["model_kwargs"]["attn_implementation"] == "sdpa"
     assert observed["adapter_path"] == tmp_path / "adapter"
+
+
+def test_loads_exact_swift_message_prompt_and_detail_response(tmp_path):
+    module = load_module()
+    image_path = tmp_path / "image.webp"
+    Image.new("RGB", (80, 60), color="white").save(image_path, format="WEBP", lossless=True)
+    with Image.open(image_path) as image:
+        image_id = module.normalized_pixel_hash(image)
+    prompt = (
+        "<image>\nNews headline: Exact headline\nImage caption: Exact caption\n"
+        "Target aspect ratio (width/height): 1"
+    )
+    rows = [
+        {
+            "messages": [{"role": "user", "content": prompt.replace(": 1", f": {ratio:g}")}],
+            "images": [str(image_path)],
+            "image_id": image_id,
+            "source_index": 0,
+            "target_ratio": ratio,
+        }
+        for ratio in module.TARGET_RATIOS
+    ]
+    data_path = tmp_path / "swift_test.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), data_path)
+
+    tasks, manifest = module.load_swift_message_tasks(data_path, tmp_path / "output")
+
+    assert len(tasks) == 4
+    assert len(manifest) == 1
+    assert tasks[0]["prompt"] == rows[0]["messages"][0]["content"]
+    response = (
+        '{"target_ratio":1.0,"is_cropped":false,"is_filled":false,'
+        '"crop_box":null,"fill_color":null,"description":"Keep the complete image."}'
+    )
+    assert module.parse_response(response, "detail-v4").action.operation == "keep"

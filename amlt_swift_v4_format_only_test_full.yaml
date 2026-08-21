@@ -1,0 +1,88 @@
+# yaml-language-server: $schema=file:///C:/Users/v-yukunban/Desktop/code/verl-Crop/.vscode/amlt-config.schema.json
+# ^ Update with: amlt schema add <file>  |  VS Code: Run Task > amlt
+# Amulet config file. Docs: https://amulet-docs.azurewebsites.net/config_file.html
+description: Evaluate the format-only step480 LoRA on all 120 Swift v42 test images with exact embedded prompts
+
+target:
+  service: manifold  # run "amlt target list manifold" to see available targets
+  name: Feeds
+  workspace_name: CS-NewsAndFeeds-Singularity  # the Singularity workspace to submit to
+
+storage:
+  blob_output:
+    storage_account_name: csnewsandfeeds4150361735
+    container_name: unium
+    mount_dir: /mnt/blob_output
+    is_output: true
+
+# REQUIRED: Docker environment
+# Manifold jobs authenticate to Azure (storage, ACR) via a User-Assigned
+# Managed Identity, auto-detected from the workspace in most cases. Only set
+# _AZUREML_SINGULARITY_JOB_UAI in 'env' below if auto-detection is ambiguous
+# (multiple non-primary identities); run 'amlt run' to see the available list.
+environment:
+  image: amlt-sing/acpt-torch2.8.x-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - python -m pip install uv
+    - uv python install 3.12
+    - uv venv --seed --python 3.12 .venv-transformers
+    - uv pip install --python .venv-transformers/bin/python "torch==2.13.0" "torchvision==0.28.0" "transformers==5.10.4" -e .
+    - uv pip install --python .venv-transformers/bin/python -e "projects/news_image_crop_benchmark[data,test]"
+    - uv pip uninstall --python .venv-transformers/bin/python opencv-python
+    - uv pip install --python .venv-transformers/bin/python --reinstall opencv-python-headless
+    - .venv-transformers/bin/python -c "import torch, torchvision, transformers, peft, cv2; print(torch.__version__, torchvision.__version__, transformers.__version__, peft.__version__, cv2.__version__)"
+
+# REQUIRED: code to run. Set local_dir to your code directory � it must
+# exist and be non-empty. $CONFIG_DIR = directory of this file; the default
+# $CONFIG_DIR/src means: put your code in a 'src' folder next to this file.
+code:
+  local_dir: $CONFIG_DIR
+
+# REQUIRED: Jobs to run. SKU examples: C1 (1 CPU), G1 (1 GPU), G4 (4 GPUs), G8-V100 (8 V100s)
+# Commands run from the uploaded code directory (code.local_dir).
+# 'command' is a shell script block (|): one line per step, e.g. python train.py --lr 0.01
+# Write outputs to $AMLT_OUTPUT_DIR for retrieval with 'amlt results'.
+# Use $$VAR to pass env vars literally ($VAR is interpolated at submission time).
+jobs:
+  - name: swift-v4-format-only-test-full
+    sku: 80G1-A100
+    sla_tier: standard
+    priority: high
+    submit_args:
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: /subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895/resourceGroups/AMLStudio/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml
+    command: |
+      set -euo pipefail
+      MODEL=/mnt/blob_output/HuggingFace/Models/Qwen/Qwen3.5-9B
+      ADAPTER=/mnt/blob_output/v-yukunban/checkpoints/news_image_crop_fill_sft/exports/qwen35_swift_v4_format_only_step480/lora_adapter
+      DATA=/mnt/blob_output/v-shaoboliu/verl-Crop/swift-crop/crop_test_infer.parquet
+      RUN_ID=qwen35-swift-v4-format-only-step480-detail-transformers-full-20260820
+      OUTPUT=/mnt/blob_output/v-yukunban/crop-image-dataset/results/$$RUN_ID
+      export OUTPUT
+      test -d "$$MODEL"
+      test -f "$$DATA"
+      test -s "$$ADAPTER/adapter_config.json"
+      test -s "$$ADAPTER/adapter_model.safetensors"
+      test ! -e "$$OUTPUT"
+      ADAPTER="$$ADAPTER" .venv-transformers/bin/python -c 'import json, os, pathlib; p=pathlib.Path(os.environ["ADAPTER"]); c=json.loads((p / "adapter_config.json").read_text()); assert c["r"] == 8 and c["lora_alpha"] == 32 and c["task_type"] == "CAUSAL_LM", c'
+      .venv-transformers/bin/python projects/news_image_crop_benchmark/scripts/evaluate_crop_fill_action.py \
+        --backend transformers \
+        --model "$$MODEL" \
+        --lora-adapter-path "$$ADAPTER" \
+        --lora-rank 8 \
+        --data "$$DATA" \
+        --data-format swift-messages \
+        --response-protocol detail-v4 \
+        --output-dir "$$OUTPUT" \
+        --run-id "$$RUN_ID" \
+        --max-attempts 1 \
+        --seed 42 \
+        --temperature 0 \
+        --top-p 1 \
+        --max-model-len 4096 \
+        --max-tokens 512
+      .venv-transformers/bin/python -c 'import json, os, pathlib; p=pathlib.Path(os.environ["OUTPUT"]); x=json.loads((p / "_NO_JUDGE_EVAL_COMPLETE.json").read_text()); assert x["tasks"] == 480 and x["valid"] == 480 and x["rendered"] == 480, x'
+      cp "$$OUTPUT/summary.json" "$$AMLT_OUTPUT_DIR/summary.json"
+      cp "$$OUTPUT/runtime.json" "$$AMLT_OUTPUT_DIR/runtime.json"
+      printf '%s\n' "$$OUTPUT" > "$$AMLT_OUTPUT_DIR/output_path.txt"
+
